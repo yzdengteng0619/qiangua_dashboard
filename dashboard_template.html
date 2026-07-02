@@ -1,0 +1,160 @@
+<!-- 芯鲜事运营看板 — V4 Fixed
+     CSS类名与HTML完全对齐 + 折叠修复 + 思源黑体 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>芯鲜事运营看板 · {{DATE}}</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#f5f6f8;--surface:#fff;--surface2:#fafbfc;
+  --border:#e5e7eb;--border2:#d1d5db;
+  --text:#111827;--text2:#4b5563;--muted:#9ca3af;--faint:#d1d5db;
+  --accent:#2563eb;--accent-soft:#eff6ff;
+  --high:#dc2626;--high-bg:#fef2f2;
+  --green:#16a34a;--green-bg:#f0fdf4;
+  --amber:#d97706;--amber-bg:#fffbeb;
+  --purple:#7c3aed;--purple-bg:#f5f3ff;
+  --radius:10px;
+}
+body{background:var(--bg);color:var(--text);font-family:'Noto Sans SC',system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.6}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+
+/* ═══ LAYOUT ═══ */
+.dash{max-width:900px;margin:0 auto;padding:24px 20px 60px}
+
+/* ═══ HEADER ═══ */
+.hdr{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.hdr-mark{width:30px;height:30px;border-radius:8px;background:var(--accent);display:grid;place-items:center;color:#fff;font-size:15px;flex:none}
+.hdr h1{font-size:16px;font-weight:600}
+.hdr p{font-size:12px;color:var(--muted)}
+
+/* ═══ STATS ═══ */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px;text-align:center}
+.stat .n{font-size:22px;font-weight:700;line-height:1}
+.stat .l{font-size:11px;color:var(--muted);margin-top:4px}
+.stat.hl{background:var(--accent);border-color:var(--accent);color:#fff}
+.stat.hl .l{color:rgba(255,255,255,.7)}
+
+/* ═══ HOTBAR ═══ */
+.hotbar{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;overflow:hidden}
+.hotbar-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.hotbar-head h2{font-size:14px;font-weight:600}
+.hotbar-head .hot-dot{width:6px;height:6px;border-radius:50%;background:var(--high);flex:none}
+.hotbar-head .weekly{font-size:11px;color:var(--muted);margin-left:auto}
+.hotbar-items{}
+
+/* ═══ HOT ITEMS ═══ */
+.hot-item{border-bottom:1px solid var(--border)}
+.hot-item:last-child{border-bottom:none}
+.hot-item-head{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;transition:background .1s}
+.hot-item-head:hover{background:var(--surface2)}
+.hot-item-head .rank{font-size:11px;font-weight:600;color:var(--muted);width:14px;text-align:center;flex:none}
+.hot-item-head .rank.r1{color:var(--high)}
+.hot-item-head .title{flex:1;font-size:13px;font-weight:500}
+.hot-item-head .meta{font-size:11px;color:var(--muted);white-space:nowrap}
+.hot-item-head .arrow{font-size:10px;color:var(--faint);transition:transform .2s;flex:none}
+.hot-item.open>.hot-item-head .arrow{transform:rotate(90deg)}
+.hot-item .detail{display:none;padding:0 14px 12px 38px;font-size:12px;color:var(--text2);line-height:1.7}
+.hot-item.open>.detail{display:block}
+.pill{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:500}
+.pill-h{background:var(--high-bg);color:var(--high)}
+.pill-m{background:var(--amber-bg);color:var(--amber)}
+
+/* ═══ SECTION ═══ */
+.sec{display:flex;align-items:center;gap:8px;margin:20px 0 10px}
+.sec h2{font-size:14px;font-weight:600}
+.sec .ln{flex:1;height:1px;background:var(--border)}
+.sec .count{font-size:11px;color:var(--muted)}
+
+/* ═══ CLUSTERS ═══ */
+.cluster{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;overflow:hidden}
+.cluster-head{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;transition:background .1s}
+.cluster-head:hover{background:var(--surface2)}
+.cluster-head .icon{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;flex:none}
+.cluster-head .icon.high{background:var(--high-bg)}
+.cluster-head .icon.mid{background:var(--amber-bg)}
+.cluster-head .icon.low{background:var(--surface2);border:1px solid var(--border)}
+.cluster-head .info{flex:1;min-width:0}
+.cluster-head .name{font-size:13px;font-weight:600}
+.cluster-head .sub{font-size:11px;color:var(--muted)}
+.cluster-head .badge{padding:2px 7px;border-radius:20px;font-size:10px;font-weight:500;flex:none}
+.cluster-head .badge.high{background:var(--high-bg);color:var(--high)}
+.cluster-head .badge.mid{background:var(--amber-bg);color:var(--amber)}
+.cluster-head .badge.low{background:var(--surface2);color:var(--muted);border:1px solid var(--border)}
+.cluster-head .arrow{font-size:10px;color:var(--faint);transition:transform .2s;flex:none}
+.cluster.open>.cluster-head .arrow{transform:rotate(90deg)}
+.cluster-body{display:none;padding:0 14px 14px;border-top:1px solid var(--border)}
+.cluster.open>.cluster-body{display:block}
+.cluster-body .tags{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.cluster-body .tag{padding:2px 8px;border-radius:20px;font-size:11px;background:var(--surface2);color:var(--text2);border:1px solid var(--border)}
+.cluster-body .tag.topic{background:var(--purple-bg);color:var(--purple);border-color:#e0d4fc}
+.cluster-body .insight{font-size:12px;color:var(--text2);line-height:1.7;padding:8px 10px;background:var(--surface2);border-radius:8px;border:1px solid var(--border);margin:6px 0}
+.cluster-body .action{font-size:12px;color:var(--accent);font-weight:500;margin-top:6px}
+
+/* ═══ NOTES ═══ */
+.note{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;overflow:hidden}
+.note-head{display:flex;align-items:center;gap:8px;padding:9px 14px;cursor:pointer;transition:background .1s}
+.note-head:hover{background:var(--surface2)}
+.note-head .note-form{padding:1px 6px;border-radius:4px;font-size:10px;font-weight:500;flex:none}
+.note-head .note-form.img{background:var(--accent-soft);color:var(--accent)}
+.note-head .note-form.vid{background:var(--purple-bg);color:var(--purple)}
+.note-head .note-title{flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note-head .note-stats{font-size:11px;color:var(--muted);white-space:nowrap;flex:none}
+.note-head .note-arrow{font-size:10px;color:var(--faint);transition:transform .2s;flex:none}
+.note.open>.note-head .note-arrow{transform:rotate(90deg)}
+.note-body{display:none;padding:0 14px 12px;border-top:1px solid var(--border);font-size:12px;color:var(--text2);line-height:1.7}
+.note.open>.note-body{display:block}
+.note-body .note-meta{margin:6px 0;color:var(--muted)}
+.note-body .note-link{color:var(--accent);display:inline-block;margin-bottom:6px}
+.note-body .analysis{padding:8px 10px;background:var(--surface2);border-radius:8px;border:1px solid var(--border)}
+.note-body .analysis .label{font-size:9px;font-weight:500;letter-spacing:.5px;text-transform:uppercase;margin-bottom:2px}
+.note-body .analysis .label.why{color:var(--high)}
+.note-body .analysis .label.how{color:var(--accent)}
+
+/* ═══ TRENDS ═══ */
+.trend{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:11px 14px;margin-bottom:6px}
+.trend .trend-title{font-size:13px;font-weight:600;margin-bottom:3px}
+.trend .trend-body{font-size:12px;color:var(--text2);line-height:1.7}
+.trend .trend-action{font-size:12px;color:var(--accent);font-weight:500;margin-top:4px}
+
+/* ═══ RAW DATA ═══ */
+.raw{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.raw summary{padding:10px 14px;font-size:12px;color:var(--muted);cursor:pointer;font-weight:500}
+.raw summary:hover{background:var(--surface2)}
+.raw table{width:100%;border-collapse:collapse;font-size:11.5px}
+.raw th{background:var(--surface2);color:var(--muted);padding:7px 10px;text-align:left;font-size:10px;font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap}
+.raw td{padding:6px 10px;border-bottom:1px solid var(--border);color:var(--text2)}
+.raw tr:hover td{background:var(--surface2)}
+.raw a{color:var(--accent)}
+
+/* ═══ FOOTER ═══ */
+.footer{text-align:center;padding:30px 0 0;color:var(--faint);font-size:10px}
+</style>
+</head>
+<body>
+<div class="dash">
+{{CONTENT}}
+<div class="footer">千瓜数据 · MiniMax M3 · 4层Pipeline · {{TIMESTAMP}}</div>
+</div>
+<script>
+// 统一折叠：hot-item / cluster / note
+document.querySelectorAll('.hot-item').forEach(function(el){
+  var head = el.querySelector('.hot-item-head');
+  if(head) head.addEventListener('click', function(){ el.classList.toggle('open'); });
+});
+document.querySelectorAll('.cluster').forEach(function(el){
+  var head = el.querySelector('.cluster-head');
+  if(head) head.addEventListener('click', function(){ el.classList.toggle('open'); });
+});
+document.querySelectorAll('.note').forEach(function(el){
+  var head = el.querySelector('.note-head');
+  if(head) head.addEventListener('click', function(){ el.classList.toggle('open'); });
+});
+</script>
+</body>
+</html>

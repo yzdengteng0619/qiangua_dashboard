@@ -1,0 +1,11 @@
+# 不要提交的文件
+*.db
+*.db-journal
+*.db-wal
+__pycache__/
+*.pyc
+.env
+*.key
+*.pem
+qiangua_uploads/
+xhs_hot_reports/
