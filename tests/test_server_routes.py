@@ -11,3 +11,15 @@ def test_upload_page_paths():
     assert server.is_upload_page_path("/index.html")
     assert server.is_upload_page_path("/upload")
     assert not server.is_upload_page_path("/upload/history")
+
+
+def test_validate_upload_file_rejects_unknown_qiangua_file(tmp_path):
+    path = tmp_path / "bad.xlsx"
+    path.write_bytes(b"not a real workbook")
+
+    result = server.validate_upload_file(path)
+
+    assert result["ok"] is False
+    assert result["filename"] == "bad.xlsx"
+    assert result["sheet_type"] == "unknown"
+    assert "未识别的千瓜文件类型" in result["errors"][0]

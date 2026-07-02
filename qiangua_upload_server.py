@@ -211,6 +211,50 @@ def safe_int(v):
     try: return int(float(s))
     except: return 0
 
+
+REQUIRED_COLUMNS = {
+    "realtime_notes": ["排名", "笔记标题", "笔记链接", "互动量"],
+    "realtime_notes_6h": ["排名", "笔记标题", "笔记链接", "互动量"],
+    "low_fan_notes": ["排名", "笔记标题", "笔记链接", "互动量"],
+    "commercial_notes": ["排名", "笔记标题", "笔记链接", "互动量"],
+    "traffic_boost": ["排名", "笔记标题", "笔记链接", "互动量"],
+    "hotwords_delta": ["排名", "热搜词名称"],
+    "hotwords_total": ["排名", "热搜词名称"],
+    "topics_delta": ["排名", "话题名称"],
+    "topics_total": ["排名", "话题名称"],
+}
+
+
+def validate_upload_file(filepath):
+    filename = os.path.basename(filepath)
+    sheet_type = detect_sheet_type(filename)
+    result = {
+        "ok": False,
+        "filename": filename,
+        "sheet_type": sheet_type,
+        "row_count": 0,
+        "errors": [],
+    }
+    if sheet_type == "unknown":
+        result["errors"].append(f"未识别的千瓜文件类型: {filename}")
+        return result
+    try:
+        df = pd.read_excel(filepath, nrows=5)
+    except Exception as exc:
+        result["errors"].append(f"Excel 读取失败: {exc}")
+        return result
+    if df.empty:
+        result["errors"].append("Excel 内容为空")
+        return result
+    required = REQUIRED_COLUMNS.get(sheet_type, [])
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        result["errors"].append(f"缺少必要字段: {', '.join(missing)}")
+        return result
+    result["ok"] = True
+    result["row_count"] = len(df.index)
+    return result
+
 def ingest_file(conn, filepath):
     filename = os.path.basename(filepath)
     sheet_type = detect_sheet_type(filename)
@@ -1138,9 +1182,31 @@ class UploadHandler(BaseHTTPRequestHandler):
             # Step 1: Parse
             update_task_run(run_id, status="running", current_stage="解析入库")
             sse_events[task_id] = [{"stage": "解析中", "msg": f"解析 {len(files)} 个文件...", "time": datetime.now().strftime("%H:%M:%S")}]
+            validation_results = [
+                validate_upload_file(UPLOAD_DIR / fn)
+                for fn in files
+                if os.path.exists(UPLOAD_DIR / fn)
+            ]
+            invalid_results = [item for item in validation_results if not item["ok"]]
+            valid_files = [item["filename"] for item in validation_results if item["ok"]]
+            if invalid_results:
+                detail = "；".join(
+                    f'{item["filename"]}: {" / ".join(item["errors"])}'
+                    for item in invalid_results
+                )
+                sse_events[task_id].append({"stage": "校验提醒", "msg": detail, "time": datetime.now().strftime("%H:%M:%S")})
+            if not valid_files:
+                detail = "；".join(
+                    f'{item["filename"]}: {" / ".join(item["errors"])}'
+                    for item in invalid_results
+                ) or "未找到可解析的 Excel 文件"
+                update_task_run(run_id, status="failed", current_stage="校验失败", error=detail)
+                update_task_run(run_id, status="failed", error=detail, finish=True)
+                sse_events[task_id].append({"stage": "错误", "msg": detail, "time": datetime.now().strftime("%H:%M:%S")})
+                return
             conn = init_db()
             total = 0
-            for fn in files:
+            for fn in valid_files:
                 fp = str(UPLOAD_DIR / fn)
                 if os.path.exists(fp):
                     inserted, stype = ingest_file(conn, fp)
