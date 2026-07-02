@@ -116,6 +116,7 @@ tr:last-child td{border-bottom:none}
 .quick-card strong{display:block;margin-bottom:4px}
 .run-item{display:flex;justify-content:space-between;gap:12px;border-top:1px solid #edf1f5;padding:11px 0;color:var(--sub)}
 .run-item:first-of-type{border-top:0;padding-top:0}
+.run-error{display:block;margin-top:4px;color:var(--red);font-style:normal;font-size:12px;line-height:1.45}
 .result-link{display:none;margin-top:14px;background:#0f8f61;color:#fff;border-radius:7px;padding:10px 12px;font-weight:850;text-align:center}
 @media(max-width:920px){
   .app,.reader{display:block}
@@ -189,13 +190,17 @@ def render_upload_page(date_str, recent_runs=None):
         for idx, label in enumerate(steps, 1)
     )
     if recent_runs:
-        recent_html = "".join(
-            '<div class="run-item">'
-            f'<span>{escape(str(run.get("analysis_date", "")))} · {escape(str(run.get("current_stage", "")))} · {fmt(run.get("total_rows", 0))} 行</span>'
-            f'<strong>{escape(str(run.get("status", "")))}</strong>'
-            '</div>'
-            for run in recent_runs[:5]
-        )
+        recent_parts = []
+        for run in recent_runs[:5]:
+            error = str(run.get("error", "") or "")
+            error_html = f'<em class="run-error">{escape(error)}</em>' if error else ""
+            recent_parts.append(
+                '<div class="run-item">'
+                f'<span>{escape(str(run.get("analysis_date", "")))} · {escape(str(run.get("current_stage", "")))} · {fmt(run.get("total_rows", 0))} 行{error_html}</span>'
+                f'<strong>{escape(str(run.get("status", "")))}</strong>'
+                '</div>'
+            )
+        recent_html = "".join(recent_parts)
     else:
         recent_html = (
             '<div class="run-item"><span>今日批次</span><strong>等待上传</strong></div>'

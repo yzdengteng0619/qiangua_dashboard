@@ -114,3 +114,21 @@ def test_upload_page_renders_recent_runs():
     assert "done" in html
     assert "生成页面" in html
     assert "128" in html
+
+
+def test_upload_page_renders_recent_run_error_detail():
+    html = renderers.render_upload_page(
+        "2026-07-02",
+        recent_runs=[
+            {
+                "analysis_date": "2026-07-02",
+                "status": "failed",
+                "current_stage": "校验失败",
+                "total_rows": 0,
+                "error": "未识别的千瓜文件类型: bad.xlsx",
+            }
+        ],
+    )
+    assert "failed" in html
+    assert "校验失败" in html
+    assert "未识别的千瓜文件类型" in html
