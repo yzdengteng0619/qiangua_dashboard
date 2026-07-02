@@ -55,6 +55,7 @@ MINIMAX_API_URL = "https://api.minimaxi.com/v1/chat/completions"
 
 # SSE事件存储
 sse_events = {}  # task_id -> list of events
+task_run_ids = {}  # task_id -> analysis_runs.id
 
 
 def parse_date_from_path(path):
@@ -71,6 +72,29 @@ def parse_date_from_path(path):
 def is_upload_page_path(path):
     parsed = urlparse(path)
     return parsed.path in {"/", "/index.html", "/upload"}
+
+
+def update_task_run(run_id, status=None, current_stage=None, total_rows=None, error=None, finish=False):
+    if not run_id:
+        return
+    try:
+        import db
+
+        conn = db.init_db(DB_PATH)
+        if finish:
+            db.finish_analysis_run(conn, run_id, status or "done", error=error)
+        else:
+            db.update_analysis_run(
+                conn,
+                run_id,
+                status=status,
+                current_stage=current_stage,
+                total_rows=total_rows,
+                error=error,
+            )
+        conn.close()
+    except Exception as exc:
+        print(f"[RUN STATUS] update failed: {exc}")
 
 # ─── 数据库初始化 ─────────────────────────────────────────────────────────────
 def init_db():
@@ -381,7 +405,7 @@ def _build_notes_data_all(conn, ds):
     return "\n".join(high_lines), "\n".join(low_lines)
 
 # ─── 4层Pipeline分析 ──────────────────────────────────────────────────────────
-def run_analysis_pipeline(task_id, date_str):
+def run_analysis_pipeline(task_id, date_str, run_id=None):
     """
     4层Pipeline分析：
     L1: 热词+话题聚类
@@ -409,6 +433,7 @@ def run_analysis_pipeline(task_id, date_str):
     emit("分析启动", f"开始4层Pipeline分析 {date_str} ...")
 
     conn = init_db()
+    update_task_run(run_id, status="running", current_stage="准备数据")
 
     # 准备数据
     emit("数据准备", "构建热词+话题数据...")
@@ -419,12 +444,14 @@ def run_analysis_pipeline(task_id, date_str):
     emit("数据准备", f"热词{len(hotword_data.splitlines())}条, 话题{len(topic_data.splitlines())}条, 笔记{len(high_notes.splitlines())}+{len(low_notes.splitlines())}条")
 
     # ── Layer 1: 聚类 ──
+    update_task_run(run_id, status="running", current_stage="L1 趋势聚类")
     emit("Layer 1/4", "热词+话题主题聚类分析中...")
     l1_prompt = L1_CLUSTER_PROMPT.format(hotword_data=hotword_data, topic_data=topic_data)
     l1_result = llm_analyze(l1_prompt)
     emit("Layer 1/4", "聚类完成", l1_result)
 
     # ── Layer 2: 深度分析 ──
+    update_task_run(run_id, status="running", current_stage="L2 深度机会")
     emit("Layer 2/4", "聚类深度分析（趋势+借势+机会）...")
     l1_json_str = json.dumps(l1_result, ensure_ascii=False)
     l2_prompt = L2_DEEP_ANALYSIS_PROMPT.format(
@@ -436,6 +463,7 @@ def run_analysis_pipeline(task_id, date_str):
     emit("Layer 2/4", "深度分析完成", l2_result)
 
     # ── Layer 3: 爆款分析 ──
+    update_task_run(run_id, status="running", current_stage="L3 爆款拆解")
     emit("Layer 3/4", "爆款笔记分析（分类+归组+原因）...")
     l3_prompt = L3_NOTES_ANALYSIS_PROMPT.format(
         l1_clusters_json=l1_json_str,
@@ -446,6 +474,7 @@ def run_analysis_pipeline(task_id, date_str):
     emit("Layer 3/4", "爆款分析完成", l3_result)
 
     # ── Layer 4: 选题推荐 ──
+    update_task_run(run_id, status="running", current_stage="L4 选题推荐")
     emit("Layer 4/4", "综合选题推荐（基于L1-L3）...")
     l2_json_str = json.dumps(l2_result, ensure_ascii=False)
     l3_json_str = json.dumps(l3_result, ensure_ascii=False)
@@ -488,23 +517,27 @@ def run_analysis_pipeline(task_id, date_str):
         )
     except: pass
 
+    artifact_run_id = run_id
+    conn.commit()
+
     try:
         import analysis_artifacts
         import db
 
         artifact_conn = db.init_db(DB_PATH)
-        run_id = db.create_analysis_run(artifact_conn, date_str, model="MiniMax-Text-01")
-        db.save_artifact(artifact_conn, run_id, "l1_clusters", l1_result)
-        db.save_artifact(artifact_conn, run_id, "l2_opportunities", l2_result)
-        db.save_artifact(artifact_conn, run_id, "l3_note_patterns", l3_result)
-        db.save_artifact(artifact_conn, run_id, "l4_recommendations", l4_result)
+        if artifact_run_id is None:
+            artifact_run_id = db.create_analysis_run(artifact_conn, date_str, model="MiniMax-Text-01")
+        db.save_artifact(artifact_conn, artifact_run_id, "l1_clusters", l1_result)
+        db.save_artifact(artifact_conn, artifact_run_id, "l2_opportunities", l2_result)
+        db.save_artifact(artifact_conn, artifact_run_id, "l3_note_patterns", l3_result)
+        db.save_artifact(artifact_conn, artifact_run_id, "l4_recommendations", l4_result)
         db.save_artifact(
             artifact_conn,
-            run_id,
+            artifact_run_id,
             "daily_report",
             analysis_artifacts.build_daily_report(l1_result, l2_result, l3_result, l4_result),
         )
-        db.finish_analysis_run(artifact_conn, run_id, "done")
+        db.update_analysis_run(artifact_conn, artifact_run_id, current_stage="生成页面")
         artifact_conn.close()
     except Exception as e:
         emit("洞察日报", f"结构化日报保存失败: {e}")
@@ -523,9 +556,13 @@ def run_analysis_pipeline(task_id, date_str):
         conn2 = init_db()
         generate_dashboard(date_str, l1_result, l2_result, l3_result, l4_result, conn2)
         conn2.close()
+        update_task_run(artifact_run_id, current_stage="已完成")
+        update_task_run(artifact_run_id, status="done", finish=True)
         emit("看板就绪", f"✅ 看板已生成", {"url": f"/dashboard/{date_str}"})
     except Exception as e:
         import traceback
+        update_task_run(artifact_run_id, status="failed", current_stage="生成页面失败", error=str(e))
+        update_task_run(artifact_run_id, status="failed", error=str(e), finish=True)
         emit("看板错误", f"看板生成失败: {e}")
         traceback.print_exc()
         emit("看板就绪", "⚠️ 分析完成但看板生成失败", {"error": str(e)})
@@ -977,8 +1014,15 @@ class UploadHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_upload_page(self):
+        import db
         import renderers
-        self.send_html(renderers.render_upload_page(datetime.now().strftime("%Y-%m-%d")))
+        conn = db.init_db(DB_PATH)
+        recent_runs = db.recent_analysis_runs(conn)
+        conn.close()
+        self.send_html(renderers.render_upload_page(
+            datetime.now().strftime("%Y-%m-%d"),
+            recent_runs=recent_runs,
+        ))
 
     def send_dashboard_page(self):
         import db
@@ -1073,13 +1117,26 @@ class UploadHandler(BaseHTTPRequestHandler):
             return
 
         task_id = f"task_{int(time.time()*1000)}"
-        threading.Thread(target=self.run_pipeline, args=(task_id, saved), daemon=True).start()
-        self.send_json(True, f'上传 {len(saved)} 个文件，开始处理', extra={"task_id": task_id})
+        today = datetime.now().strftime("%Y-%m-%d")
+        run_id = None
+        try:
+            import db
 
-    def run_pipeline(self, task_id, files):
+            run_conn = db.init_db(DB_PATH)
+            run_id = db.create_analysis_run(run_conn, today, model="MiniMax-Text-01")
+            db.update_analysis_run(run_conn, run_id, current_stage="等待解析")
+            run_conn.close()
+            task_run_ids[task_id] = run_id
+        except Exception as exc:
+            print(f"[RUN STATUS] create failed: {exc}")
+        threading.Thread(target=self.run_pipeline, args=(task_id, saved, run_id), daemon=True).start()
+        self.send_json(True, f'上传 {len(saved)} 个文件，开始处理', extra={"task_id": task_id, "run_id": run_id})
+
+    def run_pipeline(self, task_id, files, run_id=None):
         today = datetime.now().strftime("%Y-%m-%d")
         try:
             # Step 1: Parse
+            update_task_run(run_id, status="running", current_stage="解析入库")
             sse_events[task_id] = [{"stage": "解析中", "msg": f"解析 {len(files)} 个文件...", "time": datetime.now().strftime("%H:%M:%S")}]
             conn = init_db()
             total = 0
@@ -1089,13 +1146,16 @@ class UploadHandler(BaseHTTPRequestHandler):
                     inserted, stype = ingest_file(conn, fp)
                     total += inserted
             conn.close()
+            update_task_run(run_id, status="running", current_stage="AI 分析", total_rows=total)
             sse_events[task_id].append({"stage": "解析完成", "msg": f"入库 {total} 条记录", "time": datetime.now().strftime("%H:%M:%S")})
 
             # Step 2: 4-layer Pipeline
-            run_analysis_pipeline(task_id, today)
+            run_analysis_pipeline(task_id, today, run_id=run_id)
 
         except Exception as e:
             import traceback
+            update_task_run(run_id, status="failed", current_stage="处理失败", error=str(e))
+            update_task_run(run_id, status="failed", error=str(e), finish=True)
             sse_events[task_id].append({"stage": "错误", "msg": str(e), "time": datetime.now().strftime("%H:%M:%S")})
             sse_events[task_id].append({"stage": "错误详情", "msg": traceback.format_exc(), "time": datetime.now().strftime("%H:%M:%S")})
 

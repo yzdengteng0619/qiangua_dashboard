@@ -173,7 +173,8 @@ def nav(active):
     )
 
 
-def render_upload_page(date_str):
+def render_upload_page(date_str, recent_runs=None):
+    recent_runs = recent_runs or []
     steps = [
         "上传文件",
         "解析入库",
@@ -187,6 +188,20 @@ def render_upload_page(date_str):
         f'<div class="step wait" id="s{idx}"><div class="step-dot">{idx}</div><div>{label}</div><span class="muted">等待</span></div>'
         for idx, label in enumerate(steps, 1)
     )
+    if recent_runs:
+        recent_html = "".join(
+            '<div class="run-item">'
+            f'<span>{escape(str(run.get("analysis_date", "")))} · {escape(str(run.get("current_stage", "")))} · {fmt(run.get("total_rows", 0))} 行</span>'
+            f'<strong>{escape(str(run.get("status", "")))}</strong>'
+            '</div>'
+            for run in recent_runs[:5]
+        )
+    else:
+        recent_html = (
+            '<div class="run-item"><span>今日批次</span><strong>等待上传</strong></div>'
+            '<div class="run-item"><span>分析管线</span><strong>L1-L4</strong></div>'
+            '<div class="run-item"><span>输出页面</span><strong>看板 / 日报</strong></div>'
+        )
     body = f"""
     <div class="app">{nav("上传数据")}<main class="main">
       <section class="hero-panel">
@@ -223,9 +238,7 @@ def render_upload_page(date_str):
           </div>
           <div class="recent-runs">
             <h2>最近任务</h2>
-            <div class="run-item"><span>今日批次</span><strong>等待上传</strong></div>
-            <div class="run-item"><span>分析管线</span><strong>L1-L4</strong></div>
-            <div class="run-item"><span>输出页面</span><strong>看板 / 日报</strong></div>
+            {recent_html}
           </div>
         </aside>
       </section>
