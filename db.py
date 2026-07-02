@@ -63,9 +63,13 @@ def init_db(db_path=None):
         analysis_date TEXT NOT NULL,
         status TEXT NOT NULL,
         model TEXT,
+        current_stage TEXT,
+        total_rows INTEGER DEFAULT 0,
         error TEXT,
         created_at TEXT NOT NULL,
         finished_at TEXT)""")
+    ensure_column(conn, "analysis_runs", "current_stage", "TEXT")
+    ensure_column(conn, "analysis_runs", "total_rows", "INTEGER DEFAULT 0")
     conn.execute("""CREATE TABLE IF NOT EXISTS analysis_artifacts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         run_id INTEGER NOT NULL,
@@ -77,17 +81,48 @@ def init_db(db_path=None):
     return conn
 
 
+def ensure_column(conn, table, column, definition):
+    columns = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def now_iso():
     return datetime.now().isoformat(timespec="seconds")
 
 
 def create_analysis_run(conn, analysis_date, model=None):
     cur = conn.execute(
-        "INSERT INTO analysis_runs (analysis_date,status,model,created_at) VALUES (?,?,?,?)",
-        (analysis_date, "running", model, now_iso()),
+        "INSERT INTO analysis_runs (analysis_date,status,model,current_stage,total_rows,created_at) VALUES (?,?,?,?,?,?)",
+        (analysis_date, "running", model, "等待上传", 0, now_iso()),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def update_analysis_run(conn, run_id, status=None, current_stage=None, total_rows=None, error=None):
+    updates = []
+    params = []
+    if status is not None:
+        updates.append("status=?")
+        params.append(status)
+    if current_stage is not None:
+        updates.append("current_stage=?")
+        params.append(current_stage)
+    if total_rows is not None:
+        updates.append("total_rows=?")
+        params.append(total_rows)
+    if error is not None:
+        updates.append("error=?")
+        params.append(error)
+    if not updates:
+        return
+    params.append(run_id)
+    conn.execute(f"UPDATE analysis_runs SET {', '.join(updates)} WHERE id=?", params)
+    conn.commit()
 
 
 def finish_analysis_run(conn, run_id, status="done", error=None):
@@ -126,3 +161,25 @@ def latest_run(conn, analysis_date=None):
         "SELECT id, analysis_date, status, model, error, created_at, finished_at "
         "FROM analysis_runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
+
+
+def recent_analysis_runs(conn, limit=5):
+    rows = conn.execute(
+        """SELECT id, analysis_date, status, model, current_stage, total_rows, error, created_at, finished_at
+           FROM analysis_runs ORDER BY id DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "analysis_date": row[1],
+            "status": row[2],
+            "model": row[3] or "",
+            "current_stage": row[4] or "",
+            "total_rows": row[5] or 0,
+            "error": row[6] or "",
+            "created_at": row[7] or "",
+            "finished_at": row[8] or "",
+        }
+        for row in rows
+    ]

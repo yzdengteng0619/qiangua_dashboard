@@ -96,3 +96,21 @@ def test_upload_page_preserves_upload_contract():
     assert "multiple" in html
     assert "fetch('/upload'" in html
     assert "EventSource('/progress/'" in html
+
+
+def test_upload_page_renders_recent_runs():
+    html = renderers.render_upload_page(
+        "2026-07-02",
+        recent_runs=[
+            {
+                "analysis_date": "2026-07-02",
+                "status": "done",
+                "current_stage": "生成页面",
+                "total_rows": 128,
+            }
+        ],
+    )
+    assert "2026-07-02" in html
+    assert "done" in html
+    assert "生成页面" in html
+    assert "128" in html
