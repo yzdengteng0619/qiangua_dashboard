@@ -483,6 +483,27 @@ def run_analysis_pipeline(task_id, date_str):
         )
     except: pass
 
+    try:
+        import analysis_artifacts
+        import db
+
+        artifact_conn = db.init_db(DB_PATH)
+        run_id = db.create_analysis_run(artifact_conn, date_str, model="MiniMax-Text-01")
+        db.save_artifact(artifact_conn, run_id, "l1_clusters", l1_result)
+        db.save_artifact(artifact_conn, run_id, "l2_opportunities", l2_result)
+        db.save_artifact(artifact_conn, run_id, "l3_note_patterns", l3_result)
+        db.save_artifact(artifact_conn, run_id, "l4_recommendations", l4_result)
+        db.save_artifact(
+            artifact_conn,
+            run_id,
+            "daily_report",
+            analysis_artifacts.build_daily_report(l1_result, l2_result, l3_result, l4_result),
+        )
+        db.finish_analysis_run(artifact_conn, run_id, "done")
+        artifact_conn.close()
+    except Exception as e:
+        emit("洞察日报", f"结构化日报保存失败: {e}")
+
     conn.commit()
     conn.close()
 
