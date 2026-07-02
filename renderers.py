@@ -89,14 +89,43 @@ tr:last-child td{border-bottom:none}
 .insight-card h3{margin:0 0 8px;font-size:18px;line-height:1.35}
 .source{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--blue);font-weight:800;margin-bottom:8px}
 .insight-card p{line-height:1.75;color:#374151;margin:0}
+.upload-command-center{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);gap:18px;margin-bottom:18px}
+.upload-panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+.drop-zone{border:1px dashed #9bb8d2;background:#f6fbff;border-radius:var(--radius);padding:26px;text-align:center;cursor:pointer;transition:border-color .15s,background .15s}
+.drop-zone:hover,.drop-zone.drag{border-color:var(--blue);background:#eef7fb}
+.drop-zone h2{margin:0 0 6px;font-size:22px}
+.drop-zone p{margin:0;color:var(--sub)}
+.drop-zone input{display:none}
+.upload-button{margin-top:16px;border:0;background:var(--blue);color:#fff;border-radius:7px;padding:10px 15px;font-weight:850;cursor:pointer}
+.upload-button:disabled{background:#b9c3d1;cursor:not-allowed}
+.pipeline-steps{display:grid;gap:8px;margin-top:18px}
+.step{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:7px;padding:10px 12px}
+.step.active{border-color:var(--blue);background:#f4f9fd}
+.step.done{border-color:#b8e0cb;background:#f4fbf7}
+.step-dot{width:22px;height:22px;border-radius:6px;background:#edf2f7;display:grid;place-items:center;color:var(--sub);font-size:12px;font-weight:850}
+.step.done .step-dot{background:var(--green);color:#fff}
+.step.active .step-dot{background:var(--blue);color:#fff}
+.progress-bar{height:5px;background:#e8edf4;border-radius:999px;overflow:hidden;margin-top:14px}
+.progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--cyan));border-radius:999px;transition:width .3s}
+.file-list{display:grid;gap:8px;margin-top:12px}
+.file-item{display:flex;justify-content:space-between;gap:10px;border:1px solid var(--line);background:#fff;border-radius:7px;padding:8px 10px;color:var(--sub);font-size:12px}
+.quick-links,.recent-runs{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:14px}
+.quick-links h2,.recent-runs h2{margin:0 0 12px;font-size:15px}
+.quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.quick-card{border:1px solid var(--line);border-radius:7px;padding:11px;background:#fbfcfe}
+.quick-card strong{display:block;margin-bottom:4px}
+.run-item{display:flex;justify-content:space-between;gap:12px;border-top:1px solid #edf1f5;padding:11px 0;color:var(--sub)}
+.run-item:first-of-type{border-top:0;padding-top:0}
+.result-link{display:none;margin-top:14px;background:#0f8f61;color:#fff;border-radius:7px;padding:10px 12px;font-weight:850;text-align:center}
 @media(max-width:920px){
   .app,.reader{display:block}
   .side,.history{position:static;height:auto;min-height:0;border-right:0;border-bottom:1px solid var(--line)}
   .main{padding:18px}
-  .hero-panel,.mini-board{grid-template-columns:1fr}
+  .hero-panel,.mini-board,.upload-command-center{grid-template-columns:1fr}
   .metric-strip{grid-template-columns:1fr}
   .daily{padding:18px}
   .daily h1{font-size:34px}
+  .quick-grid{grid-template-columns:1fr}
 }
 """
 
@@ -142,6 +171,121 @@ def nav(active):
         '<div>千瓜 Intel<span class="brand-sub">XHS intelligence</span></div></div>'
         f'<div class="nav-label">工作区</div><nav class="nav">{links}</nav></aside>'
     )
+
+
+def render_upload_page(date_str):
+    steps = [
+        "上传文件",
+        "解析入库",
+        "L1 趋势聚类",
+        "L2 深度机会",
+        "L3 爆款拆解",
+        "L4 选题推荐",
+        "生成页面",
+    ]
+    step_html = "".join(
+        f'<div class="step wait" id="s{idx}"><div class="step-dot">{idx}</div><div>{label}</div><span class="muted">等待</span></div>'
+        for idx, label in enumerate(steps, 1)
+    )
+    body = f"""
+    <div class="app">{nav("上传数据")}<main class="main">
+      <section class="hero-panel">
+        <div class="hero-copy">
+          <div class="eyebrow">DAILY INGESTION</div>
+          <h1>上传任务中心</h1>
+          <p>{escape(date_str)} · 上传千瓜 Excel 或压缩包后，系统会自动入库、运行 4 层分析，并生成数据看板与洞察日报。</p>
+        </div>
+        <div class="hero-action">
+          <div><strong>上传后不用刷新</strong><span>进度会在当前页面实时更新，完成后直接打开结果。</span></div>
+          <a class="action-link" href="/dashboard?date={escape(date_str)}">看今日看板</a>
+        </div>
+      </section>
+      <section class="upload-command-center">
+        <div class="upload-panel">
+          <div class="drop-zone" id="dz">
+            <h2>拖拽千瓜文件到这里</h2>
+            <p>支持 xls / xlsx / zip / tar / gz，多文件一次上传。</p>
+            <input type="file" id="fi" multiple>
+            <button class="upload-button" id="ub" disabled>选择文件</button>
+          </div>
+          <div class="file-list" id="fl"></div>
+          <div class="progress-bar"><div class="progress-fill" id="pf"></div></div>
+          <div class="pipeline-steps" id="pipeline">{step_html}</div>
+          <a class="result-link" id="dl" href="/dashboard?date={escape(date_str)}">打开生成结果</a>
+        </div>
+        <aside>
+          <div class="quick-links">
+            <h2>快捷入口</h2>
+            <div class="quick-grid">
+              <a class="quick-card" href="/dashboard?date={escape(date_str)}"><strong>数据看板</strong><span class="muted">排行、热词、话题</span></a>
+              <a class="quick-card" href="/insights?date={escape(date_str)}"><strong>洞察日报</strong><span class="muted">趋势、选题、建议</span></a>
+            </div>
+          </div>
+          <div class="recent-runs">
+            <h2>最近任务</h2>
+            <div class="run-item"><span>今日批次</span><strong>等待上传</strong></div>
+            <div class="run-item"><span>分析管线</span><strong>L1-L4</strong></div>
+            <div class="run-item"><span>输出页面</span><strong>看板 / 日报</strong></div>
+          </div>
+        </aside>
+      </section>
+    </main></div>
+    <script>
+const dz=document.getElementById('dz'),fi=document.getElementById('fi'),ub=document.getElementById('ub');
+const pf=document.getElementById('pf'),fl=document.getElementById('fl'),dl=document.getElementById('dl');
+let sel=[];
+dz.addEventListener('click',e=>{{if(e.target!==ub)fi.click();}});
+ub.addEventListener('click',e=>{{e.stopPropagation(); if(sel.length) doUpload(); else fi.click();}});
+dz.addEventListener('dragover',e=>{{e.preventDefault();dz.classList.add('drag');}});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
+dz.addEventListener('drop',e=>{{e.preventDefault();dz.classList.remove('drag');handleFiles(e.dataTransfer.files);}});
+fi.addEventListener('change',e=>handleFiles(e.target.files));
+function validFile(f){{const n=f.name.toLowerCase();return ['.xls','.xlsx','.tar','.tar.gz','.tgz','.zip','.gz'].some(x=>n.endsWith(x));}}
+function handleFiles(files){{
+  sel=Array.from(files).filter(validFile);
+  if(!sel.length){{alert('请选择千瓜 Excel 或压缩包文件');return;}}
+  fl.innerHTML=sel.map(f=>'<div class="file-item"><span>'+f.name+'</span><span>'+Math.max(1,Math.round(f.size/1024))+'KB</span></div>').join('');
+  ub.disabled=false;ub.textContent='上传并分析 '+sel.length+' 个文件';
+}}
+async function doUpload(){{
+  if(!sel.length)return;
+  ub.disabled=true;setStage(1,'active');pf.style.width='8%';
+  const fd=new FormData();sel.forEach(f=>fd.append('files',f));
+  try{{
+    const r=await fetch('/upload',{{method:'POST',body:fd}});
+    const d=await r.json();
+    if(d.ok){{setStage(1,'done');setStage(2,'active');listenSSE(d.task_id);}}
+    else{{alert('上传失败: '+d.message);ub.disabled=false;}}
+  }}catch(e){{alert('上传失败: '+e.message);ub.disabled=false;}}
+}}
+function listenSSE(taskId){{
+  const es=new EventSource('/progress/'+taskId);
+  es.onmessage=function(e){{
+    const d=JSON.parse(e.data), stage=d.stage||'';
+    if(stage.includes('解析')||stage.includes('入库')){{setStage(2,'active');}}
+    if(stage.includes('Layer 1')){{setStage(2,'done');setStage(3,'active');}}
+    if(stage.includes('Layer 2')){{setStage(3,'done');setStage(4,'active');}}
+    if(stage.includes('Layer 3')){{setStage(4,'done');setStage(5,'active');}}
+    if(stage.includes('Layer 4')){{setStage(5,'done');setStage(6,'active');}}
+    if(stage.includes('分析完成')){{setStage(6,'done');setStage(7,'active');}}
+    if(stage.includes('看板就绪')){{
+      setStage(7,'done');pf.style.width='100%';es.close();
+      if(d.data&&d.data.url)dl.href=d.data.url;dl.style.display='block';
+      ub.disabled=false;ub.textContent='继续上传';
+    }}
+  }};
+  es.onerror=function(){{es.close();ub.disabled=false;}};
+}}
+function setStage(n,state){{
+  const el=document.getElementById('s'+n);if(!el)return;
+  el.className='step '+state;
+  const label=el.querySelector('span'); if(label) label.textContent=state==='done'?'完成':(state==='active'?'进行中':'等待');
+  const pct={{1:8,2:18,3:32,4:46,5:60,6:76,7:92}}[n]||0;
+  if(state==='done'||state==='active')pf.style.width=pct+'%';
+}}
+    </script>
+    """
+    return page("上传任务中心", body)
 
 
 def stat_card(label, value, width):

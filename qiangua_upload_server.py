@@ -67,6 +67,11 @@ def parse_date_from_path(path):
         return parts[1]
     return datetime.now().strftime("%Y-%m-%d")
 
+
+def is_upload_page_path(path):
+    parsed = urlparse(path)
+    return parsed.path in {"/", "/index.html", "/upload"}
+
 # ─── 数据库初始化 ─────────────────────────────────────────────────────────────
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -945,11 +950,8 @@ function setStage(n,state){
 
 class UploadHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/' or self.path == '/index.html':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(HTML_PAGE.encode('utf-8'))
+        if is_upload_page_path(self.path):
+            self.send_upload_page()
         elif self.path.startswith('/dashboard'):
             self.send_dashboard_page()
         elif self.path.startswith('/insights'):
@@ -973,6 +975,10 @@ class UploadHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_upload_page(self):
+        import renderers
+        self.send_html(renderers.render_upload_page(datetime.now().strftime("%Y-%m-%d")))
 
     def send_dashboard_page(self):
         import db

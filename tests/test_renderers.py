@@ -79,3 +79,20 @@ def test_insights_page_has_editorial_visual_sections():
     assert "daily-cover" in html
     assert "signal-list" in html
     assert "insight-card" in html
+
+
+def test_upload_page_has_task_center_sections():
+    html = renderers.render_upload_page("2026-07-02")
+    assert "upload-command-center" in html
+    assert "drop-zone" in html
+    assert "pipeline-steps" in html
+    assert "quick-links" in html
+    assert "recent-runs" in html
+
+
+def test_upload_page_preserves_upload_contract():
+    html = renderers.render_upload_page("2026-07-02")
+    assert 'type="file"' in html
+    assert "multiple" in html
+    assert "fetch('/upload'" in html
+    assert "EventSource('/progress/'" in html
