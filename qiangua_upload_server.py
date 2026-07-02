@@ -32,6 +32,7 @@ import shutil
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 try:
     import pandas as pd
@@ -54,6 +55,17 @@ MINIMAX_API_URL = "https://api.minimaxi.com/v1/chat/completions"
 
 # SSE事件存储
 sse_events = {}  # task_id -> list of events
+
+
+def parse_date_from_path(path):
+    parsed = urlparse(path)
+    qs_date = parse_qs(parsed.query).get("date", [None])[0]
+    if qs_date:
+        return qs_date
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) >= 2 and parts[0] in {"dashboard", "insights"}:
+        return parts[1]
+    return datetime.now().strftime("%Y-%m-%d")
 
 # ─── 数据库初始化 ─────────────────────────────────────────────────────────────
 def init_db():
@@ -917,17 +929,10 @@ class UploadHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode('utf-8'))
-        elif self.path.startswith('/dashboard/'):
-            date = self.path.split('/')[-1]
-            html_path = DASHBOARD_DIR / f"qiangua_dashboard_{date}.html"
-            if html_path.exists():
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(html_path.read_bytes())
-            else:
-                self.send_response(404)
-                self.end_headers()
+        elif self.path.startswith('/dashboard'):
+            self.send_dashboard_page()
+        elif self.path.startswith('/insights'):
+            self.send_insights_page()
         elif self.path.startswith('/progress/'):
             task_id = self.path.split('/')[-1]
             self.handle_sse(task_id)
@@ -939,6 +944,49 @@ class UploadHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    def send_html(self, html):
+        body = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_dashboard_page(self):
+        import db
+        import report_data
+        import renderers
+        date_str = parse_date_from_path(self.path)
+        conn = db.init_db(DB_PATH)
+        html = renderers.render_dashboard_page(
+            date_str,
+            report_data.dashboard_summary(conn, date_str),
+            report_data.top_notes(conn, date_str),
+            report_data.top_hotwords(conn, date_str),
+            report_data.top_topics(conn, date_str),
+        )
+        conn.close()
+        self.send_html(html)
+
+    def send_insights_page(self):
+        import db
+        import report_data
+        import renderers
+        date_str = parse_date_from_path(self.path)
+        conn = db.init_db(DB_PATH)
+        run = db.latest_run(conn, date_str)
+        report = (
+            report_data.daily_report(conn, run[0])
+            if run else {"headline": "暂无洞察日报", "key_points": [], "sections": []}
+        )
+        html = renderers.render_insights_page(
+            date_str,
+            report_data.insights_history(conn),
+            report,
+        )
+        conn.close()
+        self.send_html(html)
 
     def handle_sse(self, task_id):
         self.send_response(200)
