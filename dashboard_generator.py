@@ -5,9 +5,21 @@
 """
 import json
 from datetime import datetime
+from html import escape as html_escape
 from pathlib import Path
+from urllib.parse import urlparse
 
 TEMPLATE_PATH = Path(__file__).parent / "dashboard_template.html"
+
+def esc(value):
+    return html_escape(str(value or ""), quote=True)
+
+def safe_href(value):
+    href = str(value or "#")
+    parsed = urlparse(href)
+    if parsed.scheme in {"http", "https"}:
+        return esc(href)
+    return "#"
 
 def fmt(n):
     if n is None: return "0"
@@ -28,6 +40,7 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
         weekdays = ["一","二","三","四","五","六","日"]
         date_cn = f"{dt.year}.{dt.month}.{dt.day} 星期{weekdays[dt.weekday()]}"
     except: date_cn = date_str
+    date_cn = esc(date_cn)
 
     # ═══ Header ═══
     sections.append(f'''
@@ -47,17 +60,17 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
     # ═══ HOT TOP BAR — 选题推荐（最高优先级，4条） ═══
     recs = l4.get("recommendations", []) if isinstance(l4, dict) else []
     if recs:
-        weekly = l4.get("weekly_theme", "") if isinstance(l4, dict) else ""
+        weekly = esc(l4.get("weekly_theme", "")) if isinstance(l4, dict) else ""
         items_html = ""
         for i, r in enumerate(recs[:4], 1):
-            topic = r.get("topic_title", "")
-            ctype = r.get("content_type", "")
-            angle = r.get("intel_angle", "")[:80]
-            hook = r.get("hook_suggestion", "")
-            derivation = r.get("derivation", "")[:60]
+            topic = esc(r.get("topic_title", ""))
+            ctype = esc(r.get("content_type", ""))
+            angle = esc(str(r.get("intel_angle", ""))[:80])
+            hook = esc(r.get("hook_suggestion", ""))
+            derivation = esc(str(r.get("derivation", ""))[:60])
             refs = r.get("reference_notes", [])
-            ref_link = refs[0].get("url","#") if refs else "#"
-            ref_title = refs[0].get("title","")[:30] if refs else ""
+            ref_link = safe_href(refs[0].get("url","#")) if refs else "#"
+            ref_title = esc(str(refs[0].get("title",""))[:30]) if refs else ""
             rclass = "r1" if i == 1 else ""
             detail_html = f'<div class="detail"><strong>Intel角度：</strong>{angle}<br><strong>钩子：</strong>{hook}<br><strong>来源：</strong><a href="{ref_link}" target="_blank">{ref_title}</a></div>'
             items_html += f'''
@@ -91,29 +104,30 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
     if clusters:
         cl_html = ""
         for cl in clusters:
-            cname = cl.get("cluster_name", "")
+            cname = esc(cl.get("cluster_name", ""))
             hws = cl.get("hotwords", [])
             tps = cl.get("topics", [])
-            rel = cl.get("intel_relevance", "")
-            reason = cl.get("relevance_reason", "")
-            trend = cl.get("trend_direction", "")
+            rel_raw = cl.get("intel_relevance", "")
+            rel = esc(rel_raw)
+            reason = esc(cl.get("relevance_reason", ""))
+            trend = esc(cl.get("trend_direction", ""))
             vd = cl.get("total_view_delta", 0)
             id_ = cl.get("total_interact_delta", 0)
 
             # Find matching L2 analysis
-            a = a_lookup.get(cl.get("cluster_id")) or a_by_name.get(cname, {})
-            trend_a = a.get("trend_analysis", "")
+            a = a_lookup.get(cl.get("cluster_id")) or a_by_name.get(cl.get("cluster_name", ""), {})
+            trend_a = esc(a.get("trend_analysis", ""))
             ideas = a.get("cross_category_ideas", [])
             opps = a.get("hotword_opportunities", [])
             actions = a.get("action_items", [])
 
-            icon_cls = {"高":"high","中":"mid","低":"low","无关":"low"}.get(rel,"low")
+            icon_cls = {"高":"high","中":"mid","低":"low","无关":"low"}.get(rel_raw,"low")
             badge_cls = icon_cls
-            icon_emoji = {"高":"🎯","中":"🔗","低":"⬇️","无关":"✕"}.get(rel,"·")
+            icon_emoji = {"高":"🎯","中":"🔗","低":"⬇️","无关":"✕"}.get(rel_raw,"·")
 
             # Tags
-            hw_tags = " ".join([f'<span class="tag">{w}</span>' for w in hws[:8]])
-            tp_tags = " ".join([f'<span class="tag topic">{t}</span>' for t in tps[:6]])
+            hw_tags = " ".join([f'<span class="tag">{esc(w)}</span>' for w in hws[:8]])
+            tp_tags = " ".join([f'<span class="tag topic">{esc(t)}</span>' for t in tps[:6]])
 
             # Deep analysis body
             body_parts = []
@@ -123,17 +137,17 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
             if trend_a:
                 body_parts.append(f'<div class="insight">{trend_a}</div>')
             if ideas:
-                ideas_li = "".join([f'<li><strong>{i.get("angle","")}</strong>：{i.get("content_suggestion","")}</li>' for i in ideas[:3]])
+                ideas_li = "".join([f'<li><strong>{esc(i.get("angle",""))}</strong>：{esc(i.get("content_suggestion",""))}</li>' for i in ideas[:3]])
                 body_parts.append(f'<div style="margin-top:8px"><strong style="font-size:11px;color:var(--muted)">跨品类借势</strong><ul style="font-size:12px;color:var(--text2);padding-left:16px;line-height:1.6">{ideas_li}</ul></div>')
             if opps:
-                opps_html = " ".join([f'<span class="tag">{o.get("keyword","")}</span>' for o in opps[:4]])
+                opps_html = " ".join([f'<span class="tag">{esc(o.get("keyword",""))}</span>' for o in opps[:4]])
                 body_parts.append(f'<div style="margin-top:8px"><strong style="font-size:11px;color:var(--muted)">热词机会</strong><div class="tags">{opps_html}</div></div>')
             if actions:
-                act_html = "".join([f"<li>{a}</li>" for a in actions[:3]])
-                body_parts.append(f'<div class="action">⚡ {" · ".join(actions[:2])}</div>')
+                act_html = "".join([f"<li>{esc(action)}</li>" for action in actions[:3]])
+                body_parts.append(f'<div class="action">⚡ {" · ".join(esc(action) for action in actions[:2])}</div>')
 
             # For low-relevance: always show reason as insight
-            if rel in ("低", "无关") and reason:
+            if rel_raw in ("低", "无关") and reason:
                 body_parts.append(f'<div class="insight">{reason}</div>')
             body = "\n".join(body_parts)
             cl_html += f'''
@@ -177,14 +191,14 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
 
         notes_html = ""
         for n in all_notes[:15]:
-            form = n.get("form", "")
+            form = esc(n.get("form", ""))
             form_cls = "vid" if form == "视频" else "img"
-            title = (n.get("title","") or "")[:45]
+            title = esc(str(n.get("title","") or "")[:45])
             interactions = n.get("interactions", 0)
-            author = n.get("author", "")
+            author = esc(n.get("author", ""))
             fans = n.get("fans", 0)
-            url = n.get("url", "#")
-            cluster = n.get("_cluster", "")
+            url = safe_href(n.get("url", "#"))
+            cluster = esc(n.get("_cluster", ""))
             a = a_lookup.get(n.get("title",""), {})
 
             body_parts = []
@@ -193,8 +207,8 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
                 body_parts.append(f'<a class="note-link" href="{url}" target="_blank">查看原笔记 →</a>')
             if a:
                 body_parts.append(f'''<div class="analysis">
-                    <div class="label why">为什么火</div><p>{a.get("why_hot","")}</p>
-                    <div class="label how">Intel怎么做</div><p>{a.get("intel_howto","")}</p>
+                    <div class="label why">为什么火</div><p>{esc(a.get("why_hot",""))}</p>
+                    <div class="label how">Intel怎么做</div><p>{esc(a.get("intel_howto",""))}</p>
                 </div>''')
 
             body = "\n".join(body_parts)
@@ -223,9 +237,9 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
         for t in l3_trends[:4]:
             trends_html += f'''
             <div class="trend">
-                <div class="trend-title">{t.get("trend","")}</div>
-                <div class="trend-body">{t.get("evidence","")}</div>
-                <div class="trend-action">→ {t.get("intel_action","")}</div>
+                    <div class="trend-title">{esc(t.get("trend",""))}</div>
+                    <div class="trend-body">{esc(t.get("evidence",""))}</div>
+                    <div class="trend-action">→ {esc(t.get("intel_action",""))}</div>
             </div>'''
         sections.append(f'''
         <div class="sec"><h2>📈 内容趋势</h2><span class="ln"></span></div>
@@ -239,13 +253,13 @@ def generate_dashboard(date_str, l1, l2, l3, l4, db_conn):
             if raw_list:
                 rows_html = ""
                 for n in raw_list[:20]:
-                    title = (n.get("title","") or "")[:30]
-                    author = n.get("author","")
+                    title = esc(str(n.get("title","") or "")[:30])
+                    author = esc(n.get("author",""))
                     fans = fmt(n.get("fans",0))
                     likes = fmt(n.get("likes",0))
                     interactions = fmt(n.get("interactions",0))
-                    form_val = n.get("form","")
-                    url = n.get("url","#") or "#"
+                    form_val = esc(n.get("form",""))
+                    url = safe_href(n.get("url","#") or "#")
                     rows_html += f'<tr><td><a href="{url}" target="_blank">{title}</a></td><td>{author}</td><td>{fans}</td><td>{likes}</td><td>{interactions}</td><td>{form_val}</td></tr>'
                 sections.append(f'''
                 <div class="sec"><h2>📋 原始数据</h2><span class="ln"></span><span class="count">TOP20</span></div>

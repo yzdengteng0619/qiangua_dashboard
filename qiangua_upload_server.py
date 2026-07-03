@@ -26,11 +26,12 @@ import sys
 import tarfile
 import time
 import threading
+import uuid
 import zipfile
 import gzip
 import shutil
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -52,6 +53,7 @@ DASHBOARD_DIR = Path.home() / "clawd" / "xhs_hot_reports"
 DB_PATH = Path.home() / "clawd" / "knowledge" / "qiangua_xhs.db"
 MINIMAX_KEY_FILE = Path.home() / ".minimax_key"
 MINIMAX_API_URL = "https://api.minimaxi.com/v1/chat/completions"
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 # SSE事件存储
 sse_events = {}  # task_id -> list of events
@@ -83,6 +85,19 @@ def parse_run_id(path):
         except ValueError:
             return None
     return None
+
+
+def generate_task_id():
+    return f"task_{uuid.uuid4()}"
+
+
+def is_content_too_large(content_length):
+    if content_length is None:
+        return False
+    try:
+        return int(content_length) > MAX_UPLOAD_BYTES
+    except (TypeError, ValueError):
+        return False
 
 
 def update_task_run(run_id, status=None, current_stage=None, total_rows=None, error=None, finish=False):
@@ -1132,17 +1147,24 @@ class UploadHandler(BaseHTTPRequestHandler):
         self.send_header('Connection', 'keep-alive')
         self.end_headers()
         idx = 0
-        while True:
-            events = sse_events.get(task_id, [])
-            while idx < len(events):
-                evt = events[idx]
-                data = json.dumps(evt, ensure_ascii=False)
-                self.wfile.write(f"data: {data}\n\n".encode('utf-8'))
-                self.wfile.flush()
-                idx += 1
-                if evt.get("stage") == "看板就绪":
-                    return
-            time.sleep(0.5)
+        terminal = False
+        try:
+            while True:
+                events = sse_events.get(task_id, [])
+                while idx < len(events):
+                    evt = events[idx]
+                    data = json.dumps(evt, ensure_ascii=False)
+                    self.wfile.write(f"data: {data}\n\n".encode('utf-8'))
+                    self.wfile.flush()
+                    idx += 1
+                    if evt.get("stage") in {"看板就绪", "错误"}:
+                        terminal = True
+                        return
+                time.sleep(0.5)
+        finally:
+            if terminal:
+                sse_events.pop(task_id, None)
+                task_run_ids.pop(task_id, None)
 
     def do_POST(self):
         if self.path == '/upload':
@@ -1156,6 +1178,9 @@ class UploadHandler(BaseHTTPRequestHandler):
         content_type = self.headers.get('Content-Type', '')
         if 'multipart/form-data' not in content_type:
             self.send_json(False, '请使用 multipart/form-data 上传')
+            return
+        if is_content_too_large(self.headers.get('Content-Length')):
+            self.send_json(False, f'上传文件过大，单次上传不能超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB')
             return
 
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
@@ -1182,7 +1207,7 @@ class UploadHandler(BaseHTTPRequestHandler):
             self.send_json(False, '未找到有效的 xls/xlsx 文件')
             return
 
-        task_id = f"task_{int(time.time()*1000)}"
+        task_id = generate_task_id()
         today = datetime.now().strftime("%Y-%m-%d")
         run_id = None
         try:
@@ -1273,7 +1298,7 @@ class UploadHandler(BaseHTTPRequestHandler):
             update_task_run(run_id, status="failed", current_stage="处理失败", error=str(e))
             update_task_run(run_id, status="failed", error=str(e), finish=True)
             sse_events[task_id].append({"stage": "错误", "msg": str(e), "time": datetime.now().strftime("%H:%M:%S")})
-            sse_events[task_id].append({"stage": "错误详情", "msg": traceback.format_exc(), "time": datetime.now().strftime("%H:%M:%S")})
+            traceback.print_exc()
 
     def send_json(self, ok, message, extra=None):
         data = {"ok": ok, "message": message, "date": datetime.now().strftime("%Y-%m-%d")}
@@ -1292,13 +1317,17 @@ class UploadHandler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8090)
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     DASHBOARD_DIR.mkdir(parents=True, exist_ok=True)
-    server = HTTPServer((args.host, args.port), UploadHandler)
-    print(f"🚀 芯鲜事数据服务 v3 | 4层Pipeline | http://0.0.0.0:{args.port}")
+    server = build_server(args.host, args.port)
+    print(f"🚀 芯鲜事数据服务 v3 | 4层Pipeline | http://{args.host}:{args.port}")
     server.serve_forever()
+
+
+def build_server(host, port):
+    return ThreadingHTTPServer((host, port), UploadHandler)
 
 if __name__ == "__main__":
     main()
