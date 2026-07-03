@@ -183,3 +183,47 @@ def recent_analysis_runs(conn, limit=5):
         }
         for row in rows
     ]
+
+
+def analysis_run_detail(conn, run_id):
+    row = conn.execute(
+        """SELECT id, analysis_date, status, model, current_stage, total_rows, error, created_at, finished_at
+           FROM analysis_runs WHERE id=?""",
+        (run_id,),
+    ).fetchone()
+    if not row:
+        return None
+    run = {
+        "id": row[0],
+        "analysis_date": row[1],
+        "status": row[2],
+        "model": row[3] or "",
+        "current_stage": row[4] or "",
+        "total_rows": row[5] or 0,
+        "error": row[6] or "",
+        "created_at": row[7] or "",
+        "finished_at": row[8] or "",
+    }
+    analysis_date = run["analysis_date"]
+    quality = {
+        "note_count": conn.execute(
+            "SELECT COUNT(*) FROM xhs_notes WHERE import_date=?",
+            (analysis_date,),
+        ).fetchone()[0],
+        "hotword_count": conn.execute(
+            "SELECT COUNT(*) FROM xhs_hotwords WHERE import_date=?",
+            (analysis_date,),
+        ).fetchone()[0],
+        "topic_count": conn.execute(
+            "SELECT COUNT(*) FROM xhs_topics WHERE import_date=?",
+            (analysis_date,),
+        ).fetchone()[0],
+    }
+    artifacts = [
+        {"type": item[0], "created_at": item[1] or ""}
+        for item in conn.execute(
+            "SELECT artifact_type, created_at FROM analysis_artifacts WHERE run_id=? ORDER BY artifact_type",
+            (run_id,),
+        ).fetchall()
+    ]
+    return {"run": run, "quality": quality, "artifacts": artifacts}

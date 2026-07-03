@@ -74,6 +74,17 @@ def is_upload_page_path(path):
     return parsed.path in {"/", "/index.html", "/upload"}
 
 
+def parse_run_id(path):
+    parsed = urlparse(path)
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) == 2 and parts[0] == "runs":
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+    return None
+
+
 def update_task_run(run_id, status=None, current_stage=None, total_rows=None, error=None, finish=False):
     if not run_id:
         return
@@ -1037,6 +1048,8 @@ class UploadHandler(BaseHTTPRequestHandler):
             self.send_dashboard_page()
         elif self.path.startswith('/insights'):
             self.send_insights_page()
+        elif self.path.startswith('/runs/'):
+            self.send_run_detail_page()
         elif self.path.startswith('/progress/'):
             task_id = self.path.split('/')[-1]
             self.handle_sse(task_id)
@@ -1102,6 +1115,15 @@ class UploadHandler(BaseHTTPRequestHandler):
         )
         conn.close()
         self.send_html(html)
+
+    def send_run_detail_page(self):
+        import db
+        import renderers
+        run_id = parse_run_id(self.path)
+        conn = db.init_db(DB_PATH)
+        detail = db.analysis_run_detail(conn, run_id) if run_id else None
+        conn.close()
+        self.send_html(renderers.render_run_detail_page(detail))
 
     def handle_sse(self, task_id):
         self.send_response(200)
