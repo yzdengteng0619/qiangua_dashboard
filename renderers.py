@@ -321,6 +321,7 @@ def render_run_detail_page(detail):
     run = detail.get("run", {})
     quality = detail.get("quality", {})
     artifacts = detail.get("artifacts", [])
+    file_checks = detail.get("file_checks", [])
     date_str = str(run.get("analysis_date", ""))
     error = str(run.get("error", "") or "")
     error_html = f'<div class="notice error"><strong>错误详情</strong><p>{escape(error)}</p></div>' if error else ""
@@ -328,6 +329,16 @@ def render_run_detail_page(detail):
         f'<tr><td>{escape(str(item.get("type", "")))}</td><td>{escape(str(item.get("created_at", "")))}</td></tr>'
         for item in artifacts
     ) or '<tr><td colspan="2" class="muted">暂无结构化产物</td></tr>'
+    file_check_html = "".join(
+        "<tr>"
+        f'<td>{escape(str(item.get("filename", "")))}</td>'
+        f'<td>{escape(str(item.get("sheet_type", "")))}</td>'
+        f'<td>{escape(str(item.get("status", "")))}</td>'
+        f'<td>{fmt(item.get("row_count", 0))}</td>'
+        f'<td>{escape(str(item.get("error", "")))}</td>'
+        "</tr>"
+        for item in file_checks
+    ) or '<tr><td colspan="5" class="muted">暂无文件级校验记录</td></tr>'
     body = f"""
     <div class="app">{nav("上传数据")}<main class="main">
       <section class="hero-panel">
@@ -355,6 +366,10 @@ def render_run_detail_page(detail):
           <div class="rank-card"><h3>热词数据</h3><p class="muted">已入库 {fmt(quality.get("hotword_count", 0))} 条，用于趋势聚类和机会判断。</p></div>
           <div class="rank-card"><h3>话题数据</h3><p class="muted">已入库 {fmt(quality.get("topic_count", 0))} 条，用于话题热度和内容方向判断。</p></div>
         </div>
+      </section>
+      <section class="section">
+        <h2>上传文件明细</h2>
+        <table><thead><tr><th>文件</th><th>类型</th><th>状态</th><th>行数</th><th>错误</th></tr></thead><tbody>{file_check_html}</tbody></table>
       </section>
       <section class="section">
         <h2>输出产物</h2>

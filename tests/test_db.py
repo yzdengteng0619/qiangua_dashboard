@@ -68,3 +68,33 @@ def test_analysis_run_detail_includes_quality_counts(tmp_path):
     assert detail["quality"]["note_count"] == 1
     assert detail["quality"]["hotword_count"] == 1
     assert detail["quality"]["topic_count"] == 1
+
+
+def test_analysis_run_detail_includes_file_checks(tmp_path):
+    path = tmp_path / "qiangua.db"
+    conn = db.init_db(path)
+    run_id = db.create_analysis_run(conn, "2026-07-02")
+
+    db.save_upload_file_check(
+        conn,
+        run_id,
+        filename="good.xlsx",
+        sheet_type="realtime_notes",
+        status="ingested",
+        row_count=12,
+    )
+    db.save_upload_file_check(
+        conn,
+        run_id,
+        filename="bad.xlsx",
+        sheet_type="unknown",
+        status="failed",
+        row_count=0,
+        error="未识别的千瓜文件类型",
+    )
+
+    detail = db.analysis_run_detail(conn, run_id)
+
+    assert len(detail["file_checks"]) == 2
+    assert detail["file_checks"][0]["filename"] == "good.xlsx"
+    assert detail["file_checks"][1]["error"] == "未识别的千瓜文件类型"

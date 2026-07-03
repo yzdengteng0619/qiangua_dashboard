@@ -77,6 +77,15 @@ def init_db(db_path=None):
         content TEXT NOT NULL,
         created_at TEXT NOT NULL,
         UNIQUE(run_id, artifact_type))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS upload_file_checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        filename TEXT NOT NULL,
+        sheet_type TEXT,
+        status TEXT NOT NULL,
+        row_count INTEGER DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL)""")
     conn.commit()
     return conn
 
@@ -148,6 +157,16 @@ def get_artifact(conn, run_id, artifact_type):
         (run_id, artifact_type),
     ).fetchone()
     return json.loads(row[0]) if row else None
+
+
+def save_upload_file_check(conn, run_id, filename, sheet_type, status, row_count=0, error=""):
+    conn.execute(
+        """INSERT INTO upload_file_checks
+           (run_id, filename, sheet_type, status, row_count, error, created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (run_id, filename, sheet_type, status, row_count, error, now_iso()),
+    )
+    conn.commit()
 
 
 def latest_run(conn, analysis_date=None):
@@ -226,4 +245,19 @@ def analysis_run_detail(conn, run_id):
             (run_id,),
         ).fetchall()
     ]
-    return {"run": run, "quality": quality, "artifacts": artifacts}
+    file_checks = [
+        {
+            "filename": item[0],
+            "sheet_type": item[1] or "",
+            "status": item[2],
+            "row_count": item[3] or 0,
+            "error": item[4] or "",
+            "created_at": item[5] or "",
+        }
+        for item in conn.execute(
+            """SELECT filename, sheet_type, status, row_count, error, created_at
+               FROM upload_file_checks WHERE run_id=? ORDER BY id""",
+            (run_id,),
+        ).fetchall()
+    ]
+    return {"run": run, "quality": quality, "artifacts": artifacts, "file_checks": file_checks}
