@@ -824,6 +824,10 @@ class UploadHandler(BaseHTTPRequestHandler):
             self.send_dashboard_page()
         elif self.path.startswith('/insights'):
             self.send_insights_page()
+        elif self.path.startswith("/history"):
+            self.send_response(302)
+            self.send_header("Location", "/insights")
+            self.end_headers()
         elif self.path.startswith('/runs/'):
             self.send_run_detail_page()
         elif self.path.startswith('/progress/'):
