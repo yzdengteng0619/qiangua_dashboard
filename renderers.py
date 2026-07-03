@@ -194,11 +194,12 @@ def render_upload_page(date_str, recent_runs=None):
         for run in recent_runs[:5]:
             error = str(run.get("error", "") or "")
             error_html = f'<em class="run-error">{escape(error)}</em>' if error else ""
+            run_href = f'/runs/{int(run.get("id", 0) or 0)}'
             recent_parts.append(
-                '<div class="run-item">'
+                f'<a class="run-item" href="{run_href}">'
                 f'<span>{escape(str(run.get("analysis_date", "")))} · {escape(str(run.get("current_stage", "")))} · {fmt(run.get("total_rows", 0))} 行{error_html}</span>'
                 f'<strong>{escape(str(run.get("status", "")))}</strong>'
-                '</div>'
+                '</a>'
             )
         recent_html = "".join(recent_parts)
     else:
@@ -311,6 +312,61 @@ def stat_card(label, value, width):
         f'<div class="metric"><div class="num">{fmt(value)}</div>'
         f'<div class="label">{label}</div><div class="bar"><i style="width:{width}%"></i></div></div>'
     )
+
+
+def render_run_detail_page(detail):
+    if not detail:
+        body = f'<div class="app">{nav("上传数据")}<main class="main"><section class="section"><h1>任务不存在</h1></section></main></div>'
+        return page("任务不存在", body)
+    run = detail.get("run", {})
+    quality = detail.get("quality", {})
+    artifacts = detail.get("artifacts", [])
+    date_str = str(run.get("analysis_date", ""))
+    error = str(run.get("error", "") or "")
+    error_html = f'<div class="notice error"><strong>错误详情</strong><p>{escape(error)}</p></div>' if error else ""
+    artifact_html = "".join(
+        f'<tr><td>{escape(str(item.get("type", "")))}</td><td>{escape(str(item.get("created_at", "")))}</td></tr>'
+        for item in artifacts
+    ) or '<tr><td colspan="2" class="muted">暂无结构化产物</td></tr>'
+    body = f"""
+    <div class="app">{nav("上传数据")}<main class="main">
+      <section class="hero-panel">
+        <div class="hero-copy">
+          <div class="eyebrow">RUN DETAIL</div>
+          <h1>任务详情</h1>
+          <p>{escape(date_str)} · 任务 #{escape(str(run.get("id", "")))} · {escape(str(run.get("current_stage", "")))}</p>
+        </div>
+        <div class="hero-action">
+          <div><strong>{escape(str(run.get("status", "")))}</strong><span>创建 {escape(str(run.get("created_at", "")))} · 完成 {escape(str(run.get("finished_at", "")))}</span></div>
+          <a class="action-link" href="/upload">返回上传</a>
+        </div>
+      </section>
+      {error_html}
+      <section class="metric-strip">
+        {stat_card("入库总行数", run.get("total_rows", 0), 75)}
+        {stat_card("笔记", quality.get("note_count", 0), 70)}
+        {stat_card("热词", quality.get("hotword_count", 0), 55)}
+        {stat_card("话题", quality.get("topic_count", 0), 45)}
+      </section>
+      <section class="section">
+        <h2>数据质量</h2>
+        <div class="visual-rank">
+          <div class="rank-card"><h3>笔记数据</h3><p class="muted">已入库 {fmt(quality.get("note_count", 0))} 条，用于爆款笔记和内容形式分析。</p></div>
+          <div class="rank-card"><h3>热词数据</h3><p class="muted">已入库 {fmt(quality.get("hotword_count", 0))} 条，用于趋势聚类和机会判断。</p></div>
+          <div class="rank-card"><h3>话题数据</h3><p class="muted">已入库 {fmt(quality.get("topic_count", 0))} 条，用于话题热度和内容方向判断。</p></div>
+        </div>
+      </section>
+      <section class="section">
+        <h2>输出产物</h2>
+        <div class="hero-action">
+          <a class="action-link" href="/dashboard/{escape(date_str)}">数据看板</a>
+          <a class="action-link" href="/insights/{escape(date_str)}">洞察日报</a>
+        </div>
+        <table><thead><tr><th>类型</th><th>生成时间</th></tr></thead><tbody>{artifact_html}</tbody></table>
+      </section>
+    </main></div>
+    """
+    return page("任务详情", body)
 
 
 def rank_rows(items, title_key, meta_key, value_key, empty_text):

@@ -23,3 +23,9 @@ def test_validate_upload_file_rejects_unknown_qiangua_file(tmp_path):
     assert result["filename"] == "bad.xlsx"
     assert result["sheet_type"] == "unknown"
     assert "未识别的千瓜文件类型" in result["errors"][0]
+
+
+def test_parse_run_id_from_path():
+    assert server.parse_run_id("/runs/42") == 42
+    assert server.parse_run_id("/runs/42?x=1") == 42
+    assert server.parse_run_id("/runs/not-a-number") is None

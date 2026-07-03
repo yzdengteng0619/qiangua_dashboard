@@ -103,6 +103,7 @@ def test_upload_page_renders_recent_runs():
         "2026-07-02",
         recent_runs=[
             {
+                "id": 7,
                 "analysis_date": "2026-07-02",
                 "status": "done",
                 "current_stage": "生成页面",
@@ -114,6 +115,7 @@ def test_upload_page_renders_recent_runs():
     assert "done" in html
     assert "生成页面" in html
     assert "128" in html
+    assert 'href="/runs/7"' in html
 
 
 def test_upload_page_renders_recent_run_error_detail():
@@ -132,3 +134,27 @@ def test_upload_page_renders_recent_run_error_detail():
     assert "failed" in html
     assert "校验失败" in html
     assert "未识别的千瓜文件类型" in html
+
+
+def test_run_detail_page_renders_quality_panel():
+    html = renderers.render_run_detail_page(
+        {
+            "run": {
+                "id": 7,
+                "analysis_date": "2026-07-02",
+                "status": "done",
+                "current_stage": "已完成",
+                "total_rows": 128,
+                "error": "",
+            },
+            "quality": {
+                "note_count": 80,
+                "hotword_count": 30,
+                "topic_count": 18,
+            },
+        }
+    )
+    assert "任务详情" in html
+    assert "数据质量" in html
+    assert "2026-07-02" in html
+    assert "80" in html
