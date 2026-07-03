@@ -1211,6 +1211,21 @@ class UploadHandler(BaseHTTPRequestHandler):
             ]
             invalid_results = [item for item in validation_results if not item["ok"]]
             valid_files = [item["filename"] for item in validation_results if item["ok"]]
+            if run_id and validation_results:
+                import db
+
+                check_conn = db.init_db(DB_PATH)
+                for item in invalid_results:
+                    db.save_upload_file_check(
+                        check_conn,
+                        run_id,
+                        filename=item["filename"],
+                        sheet_type=item["sheet_type"],
+                        status="failed",
+                        row_count=0,
+                        error=" / ".join(item["errors"]),
+                    )
+                check_conn.close()
             if invalid_results:
                 detail = "；".join(
                     f'{item["filename"]}: {" / ".join(item["errors"])}'
@@ -1233,6 +1248,19 @@ class UploadHandler(BaseHTTPRequestHandler):
                 if os.path.exists(fp):
                     inserted, stype = ingest_file(conn, fp)
                     total += inserted
+                    if run_id:
+                        import db
+
+                        check_conn = db.init_db(DB_PATH)
+                        db.save_upload_file_check(
+                            check_conn,
+                            run_id,
+                            filename=fn,
+                            sheet_type=stype,
+                            status="ingested",
+                            row_count=inserted,
+                        )
+                        check_conn.close()
             conn.close()
             update_task_run(run_id, status="running", current_stage="AI 分析", total_rows=total)
             sse_events[task_id].append({"stage": "解析完成", "msg": f"入库 {total} 条记录", "time": datetime.now().strftime("%H:%M:%S")})

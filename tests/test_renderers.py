@@ -158,3 +158,31 @@ def test_run_detail_page_renders_quality_panel():
     assert "数据质量" in html
     assert "2026-07-02" in html
     assert "80" in html
+
+
+def test_run_detail_page_renders_file_checks():
+    html = renderers.render_run_detail_page(
+        {
+            "run": {
+                "id": 7,
+                "analysis_date": "2026-07-02",
+                "status": "failed",
+                "current_stage": "校验失败",
+                "total_rows": 0,
+                "error": "文件校验失败",
+            },
+            "quality": {"note_count": 0, "hotword_count": 0, "topic_count": 0},
+            "file_checks": [
+                {
+                    "filename": "bad.xlsx",
+                    "sheet_type": "unknown",
+                    "status": "failed",
+                    "row_count": 0,
+                    "error": "未识别的千瓜文件类型",
+                }
+            ],
+        }
+    )
+    assert "上传文件明细" in html
+    assert "bad.xlsx" in html
+    assert "未识别的千瓜文件类型" in html
