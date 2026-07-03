@@ -31,6 +31,8 @@ import zipfile
 import gzip
 import shutil
 from datetime import datetime
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -58,6 +60,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 # SSE事件存储
 sse_events = {}  # task_id -> list of events
 task_run_ids = {}  # task_id -> analysis_runs.id
+pipeline_semaphore = threading.BoundedSemaphore(1)
 
 
 def parse_date_from_path(path):
@@ -98,6 +101,34 @@ def is_content_too_large(content_length):
         return int(content_length) > MAX_UPLOAD_BYTES
     except (TypeError, ValueError):
         return False
+
+
+def parse_multipart_files(content_type, body):
+    message = BytesParser(policy=email_policy).parsebytes(
+        b"Content-Type: " + content_type.encode("utf-8") + b"\r\n\r\n" + body
+    )
+    files = []
+    if not message.is_multipart():
+        return files
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        if part.get_param("name", header="content-disposition") != "files":
+            continue
+        filename = part.get_filename()
+        if not filename:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        files.append({"filename": os.path.basename(filename), "content": payload})
+    return files
+
+
+def acquire_pipeline_slot():
+    return pipeline_semaphore.acquire(blocking=False)
+
+
+def release_pipeline_slot():
+    pipeline_semaphore.release()
 
 
 def update_task_run(run_id, status=None, current_stage=None, total_rows=None, error=None, finish=False):
@@ -418,6 +449,11 @@ def _parse_json_from_llm(content):
     # 返回原始内容
     return {"raw": content}
 
+
+def has_llm_error(result):
+    return isinstance(result, dict) and bool(result.get("error"))
+
+
 # ─── 数据构建辅助 ──────────────────────────────────────────────────────────────
 def _build_hotword_data(conn, ds, limit=80):
     """构建热词分析数据"""
@@ -500,6 +536,16 @@ def run_analysis_pipeline(task_id, date_str, run_id=None):
         sse_events[task_id].append(event)
         print(f"  [{stage}] {msg}")
 
+    def stop_on_llm_error(layer, result):
+        if not has_llm_error(result):
+            return False
+        msg = f"{layer} 失败: {result.get('error')}"
+        update_task_run(run_id, status="failed", current_stage=layer, error=msg)
+        update_task_run(run_id, status="failed", error=msg, finish=True)
+        emit("错误", msg)
+        conn.close()
+        return True
+
     emit("分析启动", f"开始4层Pipeline分析 {date_str} ...")
 
     conn = init_db()
@@ -519,6 +565,8 @@ def run_analysis_pipeline(task_id, date_str, run_id=None):
     l1_prompt = L1_CLUSTER_PROMPT.format(hotword_data=hotword_data, topic_data=topic_data)
     l1_result = llm_analyze(l1_prompt)
     emit("Layer 1/4", "聚类完成", l1_result)
+    if stop_on_llm_error("L1 趋势聚类", l1_result):
+        return l1_result
 
     # ── Layer 2: 深度分析 ──
     update_task_run(run_id, status="running", current_stage="L2 深度机会")
@@ -531,6 +579,8 @@ def run_analysis_pipeline(task_id, date_str, run_id=None):
     )
     l2_result = llm_analyze(l2_prompt)
     emit("Layer 2/4", "深度分析完成", l2_result)
+    if stop_on_llm_error("L2 深度机会", l2_result):
+        return l2_result
 
     # ── Layer 3: 爆款分析 ──
     update_task_run(run_id, status="running", current_stage="L3 爆款拆解")
@@ -542,6 +592,8 @@ def run_analysis_pipeline(task_id, date_str, run_id=None):
     )
     l3_result = llm_analyze(l3_prompt)
     emit("Layer 3/4", "爆款分析完成", l3_result)
+    if stop_on_llm_error("L3 爆款拆解", l3_result):
+        return l3_result
 
     # ── Layer 4: 选题推荐 ──
     update_task_run(run_id, status="running", current_stage="L4 选题推荐")
@@ -555,6 +607,8 @@ def run_analysis_pipeline(task_id, date_str, run_id=None):
     )
     l4_result = llm_analyze(l4_prompt)
     emit("Layer 4/4", "选题推荐完成", l4_result)
+    if stop_on_llm_error("L4 选题推荐", l4_result):
+        return l4_result
 
     # ── 保存所有结果 ──
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -638,299 +692,6 @@ def run_analysis_pipeline(task_id, date_str, run_id=None):
         emit("看板就绪", "⚠️ 分析完成但看板生成失败", {"error": str(e)})
 
     return {"L1": l1_result, "L2": l2_result, "L3": l3_result, "L4": l4_result}
-
-# ─── 看板生成（v3临时版，后续重构） ───────────────────────────────────────────
-def fmt(n):
-    if n is None: return "0"
-    if n >= 10000: return f"{n/10000:.1f}w"
-    if n >= 1000: return f"{n/1000:.1f}k"
-    return str(n)
-
-def generate_dashboard_v3(date_str, l1, l2, l3, l4):
-    """基于4层Pipeline结果的HTML看板"""
-    conn = init_db()
-    sections = []
-
-    # 统计
-    note_count = conn.execute("SELECT COUNT(*) FROM xhs_notes WHERE import_date >= ?", (date_str,)).fetchone()[0]
-    hw_count = conn.execute("SELECT COUNT(*) FROM xhs_hotwords WHERE import_date >= ?", (date_str,)).fetchone()[0]
-    tp_count = conn.execute("SELECT COUNT(*) FROM xhs_topics WHERE import_date >= ?", (date_str,)).fetchone()[0]
-
-    try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        weekdays = ["一", "二", "三", "四", "五", "六", "日"]
-        date_cn = f"{dt.year}年{dt.month}月{dt.day}日 星期{weekdays[dt.weekday()]}"
-    except: date_cn = date_str
-
-    # ── Layer 4: 选题推荐（置顶） ──
-    recs = l4.get("recommendations", []) if isinstance(l4, dict) else []
-    if recs:
-        recs_html = ""
-        for i, r in enumerate(recs[:5], 1):
-            topic = r.get("topic_title", "")
-            derivation = r.get("derivation", "")
-            ctype = r.get("content_type", "")
-            angle = r.get("intel_angle", "")
-            hook = r.get("hook_suggestion", "")
-            timing = r.get("timing", "")
-            refs = r.get("reference_notes", [])
-            refs_html = "".join([f'<a href="{n.get("url","#")}" target="_blank" style="color:#FF2442;font-size:0.8rem">→ {n.get("title","")[:30]}</a><br>' for n in refs[:2]])
-            data_s = r.get("data_support", "")
-            recs_html += f'''
-            <div class="rec-card">
-                <div class="rec-num">{i}</div>
-                <div class="rec-content">
-                    <h4>{topic}</h4>
-                    <p class="rec-derive">📊 {derivation}</p>
-                    <p class="rec-angle">💡 Intel角度：{angle}</p>
-                    <p>📱 形式：{ctype} | ⏰ {timing}</p>
-                    <p class="rec-hook">🪝 钩子：{hook}</p>
-                    <p style="font-size:0.8rem;color:#888">📈 {data_s}</p>
-                    {refs_html}
-                </div>
-            </div>'''
-        weekly = l4.get("weekly_theme", "") if isinstance(l4, dict) else ""
-        sections.append(f'''
-        <div class="section highlight">
-            <h2>🎯 选题推荐</h2>
-            {f'<p style="color:#888;margin-bottom:1rem">本周主题：{weekly}</p>' if weekly else ''}
-            <div class="rec-grid">{recs_html}</div>
-        </div>''')
-
-    # ── Layer 1: 聚类结果 ──
-    clusters = l1.get("clusters", []) if isinstance(l1, dict) else []
-    if clusters:
-        cl_html = ""
-        for cl in clusters:
-            cname = cl.get("cluster_name", "")
-            hws = cl.get("hotwords", [])
-            tps = cl.get("topics", [])
-            rel = cl.get("intel_relevance", "")
-            reason = cl.get("relevance_reason", "")
-            trend = cl.get("trend_direction", "")
-            vd = cl.get("total_view_delta", 0)
-            id_ = cl.get("total_interact_delta", 0)
-            rel_class = {"高": "rel-high", "中": "rel-mid", "低": "rel-low", "无关": "rel-low"}.get(rel, "")
-            hw_tags = " ".join([f'<span class="tag">{w}</span>' for w in hws[:10]])
-            tp_tags = " ".join([f'<span class="tag topic">{t}</span>' for t in tps[:8]])
-            cl_html += f'''
-            <div class="cluster-card">
-                <h3>{cname} <span class="rel-badge {rel_class}">Intel {rel}</span> <span class="trend">{trend}</span></h3>
-                <p style="font-size:0.85rem;color:#555;margin:0.3rem 0">{reason}</p>
-                <div style="margin-top:0.5rem"><strong style="font-size:0.8rem;color:#888">热词：</strong><div class="tag-cloud">{hw_tags}</div></div>
-                <div style="margin-top:0.3rem"><strong style="font-size:0.8rem;color:#888">话题：</strong><div class="tag-cloud">{tp_tags}</div></div>
-                <p style="font-size:0.8rem;color:#888;margin-top:0.3rem">浏览+{fmt(vd)} 互动+{fmt(id_)}</p>
-            </div>'''
-        sections.append(f'''
-        <div class="section">
-            <h2>📊 平台趋势总览 · 主题聚类</h2>
-            {cl_html}
-        </div>''')
-
-    # ── Layer 2: 深度分析 ──
-    cluster_analyses = l2.get("cluster_analyses", []) if isinstance(l2, dict) else []
-    if cluster_analyses:
-        la_html = ""
-        for ca in cluster_analyses:
-            cname = ca.get("cluster_name", "")
-            trend_a = ca.get("trend_analysis", "")
-            ideas = ca.get("cross_category_ideas", [])
-            opps = ca.get("hotword_opportunities", [])
-            actions = ca.get("action_items", [])
-            ideas_html = "".join([f'<li><strong>{i.get("angle","")}</strong>：{i.get("content_suggestion","")} <em>({i.get("reference_data","")})</em></li>' for i in ideas[:3]])
-            opps_html = "".join([f'<span class="tag">{o.get("keyword","")}</span> ' for o in opps[:5]])
-            actions_html = "".join([f"<li>{a}</li>" for a in actions[:3]])
-            la_html += f'''
-            <div class="cluster-card deep">
-                <h3>{cname}</h3>
-                <p style="font-size:0.9rem;color:#333;margin:0.5rem 0">{trend_a}</p>
-                <div style="margin-top:0.5rem">
-                    <strong style="font-size:0.85rem">🔗 跨品类借势：</strong>
-                    <ul style="font-size:0.85rem;color:#555;padding-left:1.2rem">{ideas_html}</ul>
-                </div>
-                <div style="margin-top:0.5rem">
-                    <strong style="font-size:0.85rem">🔥 热词机会：</strong>
-                    <div class="tag-cloud" style="margin-top:0.3rem">{opps_html}</div>
-                </div>
-                <div style="margin-top:0.5rem">
-                    <strong style="font-size:0.85rem">📋 行动建议：</strong>
-                    <ul style="font-size:0.85rem;color:#FF2442;padding-left:1.2rem">{actions_html}</ul>
-                </div>
-            </div>'''
-        priority_hw = l2.get("priority_hotwords", []) if isinstance(l2, dict) else []
-        p_html = ""
-        if priority_hw:
-            p_items = "".join([f'<li><strong>{h.get("keyword","")}</strong>：{h.get("reason","")} <em>({h.get("deadline","")})</em></li>' for h in priority_hw[:3]])
-            p_html = f'<div style="margin-top:1rem;padding:0.8rem;background:#fff5f5;border-radius:8px"><strong>⚡ 优先热词：</strong><ul style="padding-left:1.2rem;font-size:0.85rem">{p_items}</ul></div>'
-        sections.append(f'''
-        <div class="section">
-            <h2>🔍 热词趋势深度分析</h2>
-            {la_html}
-            {p_html}
-        </div>''')
-
-    # ── Layer 3: 爆款分析 ──
-    l3_clusters = l3.get("clusters", []) if isinstance(l3, dict) else []
-    l3_trends = l3.get("content_trends", []) if isinstance(l3, dict) else []
-    l3_patterns = l3.get("replicable_patterns", []) if isinstance(l3, dict) else []
-    fmt_dist = l3.get("format_distribution", {}) if isinstance(l3, dict) else {}
-
-    if l3_clusters:
-        nc_html = ""
-        for nc in l3_clusters:
-            cname = nc.get("cluster_name", "")
-            notes = nc.get("notes", [])
-            top_analyses = nc.get("top_analysis", [])
-            notes_html = ""
-            for n in notes[:6]:
-                url = n.get("url", "#")
-                title = (n.get("title", "") or "")[:35]
-                form = n.get("form", "")
-                interactions = n.get("interactions", 0)
-                author = n.get("author", "")
-                fans = n.get("fans", 0)
-                notes_html += f'<a href="{url}" target="_blank" style="display:block;padding:0.3rem 0;border-bottom:1px solid #f0f0f0;font-size:0.85rem;color:#333;text-decoration:none">📝 {title} <span style="color:#888">· {author}(粉{fmt(fans)}) 👍{fmt(interactions)} [{form}]</span></a>'
-            analysis_html = ""
-            for a in top_analyses[:3]:
-                analysis_html += f'''
-                <div style="padding:0.5rem;background:#f8f9fa;border-radius:6px;margin:0.3rem 0;font-size:0.85rem">
-                    <strong>{a.get("title","")[:40]}</strong><br>
-                    <span style="color:#dc2626">为什么火：</span>{a.get("why_hot","")}<br>
-                    <span style="color:#16a34a">可复制：</span>{a.get("replicable","")}<br>
-                    <span style="color:#FF2442">Intel怎么做：</span>{a.get("intel_howto","")}
-                </div>'''
-            nc_html += f'''
-            <div class="cluster-card notes">
-                <h3>{cname} <span class="badge-count">{len(notes)}篇</span></h3>
-                {notes_html}
-                {f'<div style="margin-top:0.5rem"><strong>爆款分析：</strong>{analysis_html}</div>' if analysis_html else ''}
-            </div>'''
-
-        fmt_insight = fmt_dist.get("insight", "")
-        fmt_info = f'<p style="color:#888;margin-bottom:0.5rem">图文 {fmt_dist.get("image_count",0)}篇 · 视频 {fmt_dist.get("video_count",0)}篇 — {fmt_insight}</p>' if fmt_dist else ""
-
-        sections.append(f'''
-        <div class="section">
-            <h2>📝 爆款笔记分析 · 按聚类归组</h2>
-            {fmt_info}
-            {nc_html}
-        </div>''')
-
-    if l3_trends:
-        trends_html = "".join([f'<li><strong>{t.get("trend","")}</strong>：<span style="color:#555">{t.get("evidence","")}</span> → <span style="color:#FF2442">{t.get("intel_action","")}</span></li>' for t in l3_trends[:5]])
-        sections.append(f'''
-        <div class="section">
-            <h2>📈 内容趋势</h2>
-            <ul style="font-size:0.9rem;padding-left:1.2rem">{trends_html}</ul>
-        </div>''')
-
-    if l3_patterns:
-        p_html = ""
-        for p in l3_patterns[:3]:
-            notes_ex = "、".join([f'"{n[:20]}"' for n in p.get("example_notes", [])[:2]])
-            p_html += f'''
-            <div style="padding:0.6rem;background:#f8f9fa;border-radius:6px;margin:0.3rem 0">
-                <strong>{p.get("pattern","")}</strong> <span style="color:#888;font-size:0.8rem">例：{notes_ex}</span><br>
-                <span style="color:#FF2442;font-size:0.85rem">Intel模板：{p.get("intel_template","")}</span>
-            </div>'''
-        sections.append(f'''
-        <div class="section">
-            <h2>♻️ 可复制内容模式</h2>
-            {p_html}
-        </div>''')
-
-    # ── 原始数据（含链接） ──
-    raw_row = conn.execute("SELECT content FROM xhs_analysis WHERE analysis_type='raw_notes' ORDER BY id DESC LIMIT 1").fetchone()
-    if raw_row:
-        try:
-            raw_list = json.loads(raw_row[0])
-            if raw_list:
-                rows_html = ""
-                for n in raw_list[:30]:
-                    title = (n.get("title","") or "")[:35]
-                    author = n.get("author","")
-                    fans = fmt(n.get("fans",0))
-                    likes = fmt(n.get("likes",0))
-                    interactions = fmt(n.get("interactions",0))
-                    form_val = n.get("form","")
-                    url = n.get("url","#") or "#"
-                    stype = n.get("sheet_type","")
-                    tag = "低粉" if "low_fan" in stype else ""
-                    rows_html += f'<tr><td><a href="{url}" target="_blank">{title}</a></td><td>{author}</td><td>{fans}</td><td>{likes}</td><td>{interactions}</td><td>{form_val}</td><td>{tag}</td></tr>'
-                sections.append(f'''
-                <div class="section">
-                    <h2>📋 原始数据 · 全部笔记 <span class="badge-count">TOP30</span></h2>
-                    <table class="data-table"><thead><tr><th>标题</th><th>达人</th><th>粉丝</th><th>👍</th><th>互动</th><th>形式</th><th>标签</th></tr></thead>
-                    <tbody>{rows_html}</tbody></table>
-                </div>''')
-        except: pass
-
-    conn.close()
-
-    if not sections:
-        sections.append('<div class="section"><p style="color:#888">暂无分析数据</p></div>')
-
-    html = f'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>芯鲜事运营看板 · {date_str}</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#fafbfc;color:#1a1a1a;line-height:1.6}}
-.container{{max-width:1100px;margin:0 auto;padding:1.5rem}}
-.hdr{{text-align:center;padding:2rem 0 1rem;border-bottom:2px solid #FF2442;margin-bottom:1.5rem}}
-.hdr h1{{font-size:1.8rem;color:#1a1a1a}}.hdr h1 span{{color:#FF2442}}.hdr p{{color:#888;margin-top:0.3rem;font-size:0.9rem}}
-.stats{{display:flex;justify-content:center;gap:2.5rem;padding:1rem 0}}
-.stat{{text-align:center}}.stat-v{{font-size:1.6rem;font-weight:700;color:#FF2442}}.stat-l{{font-size:0.75rem;color:#888}}
-.section{{margin:2rem 0;background:#fff;border-radius:12px;padding:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,0.06)}}
-.section.highlight{{border-left:4px solid #FF2442;background:#fff5f5}}
-.section h2{{font-size:1.15rem;color:#1a1a1a;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #f0f0f0}}
-.rec-grid{{display:flex;flex-direction:column;gap:1rem}}
-.rec-card{{display:flex;gap:1rem;padding:1rem;background:#f8f9fa;border-radius:8px;border:1px solid #eee}}
-.rec-num{{width:36px;height:36px;background:#FF2442;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1rem;flex-shrink:0}}
-.rec-content h4{{font-size:1rem;margin-bottom:0.3rem}}.rec-content p{{font-size:0.85rem;color:#555;margin:0.15rem 0}}
-.rec-derive{{color:#8b5cf6}}.rec-angle{{color:#FF2442}}.rec-hook{{color:#059669}}
-.cluster-card{{padding:1rem;background:#f8f9fa;border-radius:8px;margin:0.8rem 0;border-left:3px solid #FF2442}}
-.cluster-card h3{{font-size:0.95rem;margin-bottom:0.3rem}}
-.cluster-card.deep{{border-left-color:#8b5cf6}}
-.cluster-card.notes{{border-left-color:#10b981}}
-.trend{{color:#888;font-size:0.8rem}}
-.tag-cloud{{display:flex;flex-wrap:wrap;gap:0.4rem;margin:0.3rem 0}}
-.tag{{padding:0.2rem 0.6rem;border-radius:12px;font-size:0.8rem;background:#f3f4f6;color:#374151}}
-.tag.topic{{background:#ede9fe;color:#7c3aed}}
-.data-table{{width:100%;border-collapse:collapse;font-size:0.82rem}}
-.data-table th{{background:#f8f9fa;color:#555;padding:0.5rem;text-align:left;font-weight:600;border-bottom:2px solid #eee}}
-.data-table td{{padding:0.4rem 0.5rem;border-bottom:1px solid #f0f0f0;vertical-align:top}}
-.data-table tr:hover{{background:#fafbfc}}
-.rel-badge,.badge-count{{display:inline-block;padding:0.15rem 0.5rem;border-radius:4px;font-size:0.72rem;font-weight:600;margin-left:0.5rem}}
-.rel-high{{background:#fef2f2;color:#dc2626}}.rel-mid{{background:#fffbeb;color:#d97706}}.rel-low{{background:#f0f9ff;color:#6b7280}}
-.badge-count{{background:#f3f4f6;color:#6b7280}}
-.footer{{text-align:center;padding:2rem;color:#aaa;font-size:0.8rem}}
-</style>
-</head>
-<body>
-<div class="container">
-<div class="hdr">
-    <h1>📱 <span>芯鲜事</span> 运营看板</h1>
-    <p>{date_cn} · 千瓜数据 · 4层Pipeline AI分析</p>
-</div>
-<div class="stats">
-    <div class="stat"><div class="stat-v">{note_count}</div><div class="stat-l">笔记</div></div>
-    <div class="stat"><div class="stat-v">{hw_count}</div><div class="stat-l">热词</div></div>
-    <div class="stat"><div class="stat-v">{tp_count}</div><div class="stat-l">话题</div></div>
-</div>
-{"".join(sections)}
-<div class="footer">千瓜数据 · MiniMax M3 · 4层Pipeline分析 · {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
-</div>
-</body>
-</html>'''
-
-    DASHBOARD_DIR.mkdir(parents=True, exist_ok=True)
-    path = DASHBOARD_DIR / f"qiangua_dashboard_{date_str}.html"
-    path.write_text(html, encoding="utf-8")
-    return str(path)
 
 # ─── HTTP服务 ──────────────────────────────────────────────────────────────────
 HTML_PAGE = '''<!DOCTYPE html>
@@ -1174,7 +935,6 @@ class UploadHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def handle_upload(self):
-        import cgi
         content_type = self.headers.get('Content-Type', '')
         if 'multipart/form-data' not in content_type:
             self.send_json(False, '请使用 multipart/form-data 上传')
@@ -1183,25 +943,21 @@ class UploadHandler(BaseHTTPRequestHandler):
             self.send_json(False, f'上传文件过大，单次上传不能超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB')
             return
 
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
-            environ={'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': content_type})
-
-        files = form['files']
-        if not isinstance(files, list): files = [files]
+        content_length = int(self.headers.get('Content-Length') or 0)
+        upload_files = parse_multipart_files(content_type, self.rfile.read(content_length))
 
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         saved = []
-        for item in files:
-            if item.filename:
-                fn = os.path.basename(item.filename)
-                raw_path = UPLOAD_DIR / fn
-                with open(raw_path, 'wb') as f:
-                    f.write(item.file.read())
-                if fn.endswith(('.xls', '.xlsx')):
-                    saved.append(fn)
-                else:
-                    extracted = extract_archive(raw_path, UPLOAD_DIR)
-                    saved.extend(extracted)
+        for item in upload_files:
+            fn = item["filename"]
+            raw_path = UPLOAD_DIR / fn
+            with open(raw_path, 'wb') as f:
+                f.write(item["content"])
+            if fn.endswith(('.xls', '.xlsx')):
+                saved.append(fn)
+            else:
+                extracted = extract_archive(raw_path, UPLOAD_DIR)
+                saved.extend(extracted)
 
         if not saved:
             self.send_json(False, '未找到有效的 xls/xlsx 文件')
@@ -1225,6 +981,12 @@ class UploadHandler(BaseHTTPRequestHandler):
 
     def run_pipeline(self, task_id, files, run_id=None):
         today = datetime.now().strftime("%Y-%m-%d")
+        if not acquire_pipeline_slot():
+            msg = "已有分析任务正在运行，请稍后再上传"
+            update_task_run(run_id, status="failed", current_stage="等待空闲", error=msg)
+            update_task_run(run_id, status="failed", error=msg, finish=True)
+            sse_events[task_id] = [{"stage": "错误", "msg": msg, "time": datetime.now().strftime("%H:%M:%S")}]
+            return
         try:
             # Step 1: Parse
             update_task_run(run_id, status="running", current_stage="解析入库")
@@ -1299,6 +1061,8 @@ class UploadHandler(BaseHTTPRequestHandler):
             update_task_run(run_id, status="failed", error=str(e), finish=True)
             sse_events[task_id].append({"stage": "错误", "msg": str(e), "time": datetime.now().strftime("%H:%M:%S")})
             traceback.print_exc()
+        finally:
+            release_pipeline_slot()
 
     def send_json(self, ok, message, extra=None):
         data = {"ok": ok, "message": message, "date": datetime.now().strftime("%Y-%m-%d")}
